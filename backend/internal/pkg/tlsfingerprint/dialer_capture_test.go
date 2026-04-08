@@ -77,6 +77,22 @@ func TestDialerAgainstCaptureServer(t *testing.T) {
 			},
 		},
 		{
+			name: "macos_arm64_node_v2430_greased",
+			profile: &Profile{
+				Name:                "MacOS_arm64_node_v2430_greased",
+				EnableGREASE:        true,
+				CipherSuites:        []uint16{4865, 4866, 4867, 49195, 49199, 49196, 49200, 52393, 52392, 49161, 49171, 49162, 49172, 156, 157, 47, 53},
+				Curves:              []uint16{29, 23, 24},
+				PointFormats:        []uint16{0},
+				SignatureAlgorithms: []uint16{0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601, 0x0201},
+				ALPNProtocols:       []string{"http/1.1"},
+				SupportedVersions:   []uint16{0x0304, 0x0303},
+				KeyShareGroups:      []uint16{29},
+				PSKModes:            []uint16{1},
+				Extensions:          []uint16{0, 65037, 23, 65281, 10, 11, 35, 16, 5, 13, 18, 51, 45, 43},
+			},
+		},
+		{
 			name: "macos_arm64_node_v2430",
 			profile: &Profile{
 				Name:                "MacOS_arm64_node_v2430",
@@ -90,6 +106,22 @@ func TestDialerAgainstCaptureServer(t *testing.T) {
 				KeyShareGroups:      []uint16{29},
 				PSKModes:            []uint16{1},
 				Extensions:          []uint16{0, 65037, 23, 65281, 10, 11, 35, 16, 5, 13, 18, 51, 45, 43},
+			},
+		},
+		{
+			name: "linux_x64_node_v20",
+			profile: &Profile{
+				Name:                "linux_x64_node_v20",
+				EnableGREASE:        false,
+				CipherSuites:        []uint16{4866, 4867, 4865, 49196, 49200, 52393, 52392, 49195, 49199, 49188, 49192, 49187, 49191, 49162, 49172, 49161, 49171, 157, 156, 61, 60, 53, 47},
+				Curves:              []uint16{29, 23, 30, 25, 24},
+				PointFormats:        []uint16{0},
+				SignatureAlgorithms: []uint16{1027, 1283, 1539, 2055, 2052, 2053, 2054, 1025, 1281, 1537, 513},
+				ALPNProtocols:       []string{"http/1.1"},
+				SupportedVersions:   []uint16{0x0304, 0x0303},
+				KeyShareGroups:      []uint16{29},
+				PSKModes:            []uint16{1},
+				Extensions:          []uint16{0, 23, 65281, 10, 11, 35, 22, 16, 13, 43, 45, 51},
 			},
 		},
 	}
@@ -145,13 +177,13 @@ func TestDialerAgainstCaptureServer(t *testing.T) {
 			}
 
 			// Verify each field
-			assertIntSliceEqual(t, "cipher_suites", uint16sToInts(effectiveCipherSuites), captured.CipherSuites)
-			assertIntSliceEqual(t, "curves", uint16sToInts(effectiveCurves), captured.Curves)
+			assertIntSliceEqual(t, "cipher_suites", stripGREASEInts(uint16sToInts(effectiveCipherSuites)), stripGREASEInts(captured.CipherSuites))
+			assertIntSliceEqual(t, "curves", stripGREASEInts(uint16sToInts(effectiveCurves)), stripGREASEInts(captured.Curves))
 			assertIntSliceEqual(t, "point_formats", uint16sToInts(effectivePointFormats), captured.PointFormats)
 			assertIntSliceEqual(t, "signature_algorithms", uint16sToInts(effectiveSigAlgs), captured.SignatureAlgorithms)
 			assertStringSliceEqual(t, "alpn_protocols", effectiveALPN, captured.ALPNProtocols)
-			assertIntSliceEqual(t, "supported_versions", uint16sToInts(effectiveVersions), captured.SupportedVersions)
-			assertIntSliceEqual(t, "key_share_groups", uint16sToInts(effectiveKeyShare), captured.KeyShareGroups)
+			assertIntSliceEqual(t, "supported_versions", stripGREASEInts(uint16sToInts(effectiveVersions)), stripGREASEInts(captured.SupportedVersions))
+			assertIntSliceEqual(t, "key_share_groups", stripGREASEInts(uint16sToInts(effectiveKeyShare)), stripGREASEInts(captured.KeyShareGroups))
 			assertIntSliceEqual(t, "psk_modes", uint16sToInts(effectivePSKModes), captured.PSKModes)
 
 			if captured.EnableGREASE != tc.profile.EnableGREASE {
@@ -167,17 +199,8 @@ func TestDialerAgainstCaptureServer(t *testing.T) {
 				expectedExtOrder = uint16sToInts(tc.profile.Extensions)
 			}
 			// Strip GREASE values from both expected and captured for comparison
-			var filteredExpected, filteredActual []int
-			for _, e := range expectedExtOrder {
-				if !isGREASEValue(uint16(e)) {
-					filteredExpected = append(filteredExpected, e)
-				}
-			}
-			for _, e := range captured.Extensions {
-				if !isGREASEValue(uint16(e)) {
-					filteredActual = append(filteredActual, e)
-				}
-			}
+			filteredExpected := stripGREASEInts(expectedExtOrder)
+			filteredActual := stripGREASEInts(captured.Extensions)
 			assertIntSliceEqual(t, "extensions (order, non-GREASE)", filteredExpected, filteredActual)
 
 			// Print full captured data as JSON for debugging
@@ -236,6 +259,16 @@ func uint16sToInts(vals []uint16) []int {
 	result := make([]int, len(vals))
 	for i, v := range vals {
 		result[i] = int(v)
+	}
+	return result
+}
+
+func stripGREASEInts(vals []int) []int {
+	result := make([]int, 0, len(vals))
+	for _, v := range vals {
+		if !isGREASEValue(uint16(v)) {
+			result = append(result, v)
+		}
 	}
 	return result
 }

@@ -20,6 +20,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	utls "github.com/refraction-networking/utls"
 )
 
 // TestDialerBasicConnection tests that the dialer can establish TLS connections.
@@ -186,6 +188,10 @@ func TestDialerWithProfile(t *testing.T) {
 	if len(spec2.Extensions) <= len(spec1.Extensions) {
 		t.Error("expected GREASE profile to have more extensions")
 	}
+
+	if spec2.CipherSuites[0] != utls.GREASE_PLACEHOLDER {
+		t.Errorf("expected GREASE cipher suite placeholder, got 0x%04x", spec2.CipherSuites[0])
+	}
 }
 
 // TestHTTPProxyDialerBasic tests HTTP proxy dialer creation.
@@ -261,6 +267,61 @@ func TestBuildClientHelloSpec(t *testing.T) {
 
 	if len(spec.CipherSuites) != 2 {
 		t.Errorf("expected 2 cipher suites, got %d", len(spec.CipherSuites))
+	}
+}
+
+func TestBuildClientHelloSpec_EnableGREASEWithExplicitProfile(t *testing.T) {
+	profile := &Profile{
+		Name:                "Explicit GREASE",
+		EnableGREASE:        true,
+		CipherSuites:        []uint16{0x1301, 0x1302},
+		Curves:              []uint16{29, 23},
+		SupportedVersions:   []uint16{utls.VersionTLS13, utls.VersionTLS12},
+		KeyShareGroups:      []uint16{29},
+		Extensions:          []uint16{0, 10, 51, 43},
+		ALPNProtocols:       []string{"http/1.1"},
+		SignatureAlgorithms: []uint16{0x0403, 0x0804},
+	}
+
+	spec := buildClientHelloSpecFromProfile(profile)
+	if len(spec.CipherSuites) < 3 {
+		t.Fatalf("expected GREASE to expand cipher suites, got %d", len(spec.CipherSuites))
+	}
+	if spec.CipherSuites[0] != utls.GREASE_PLACEHOLDER {
+		t.Fatalf("expected GREASE cipher placeholder first, got 0x%04x", spec.CipherSuites[0])
+	}
+
+	if _, ok := spec.Extensions[0].(*utls.UtlsGREASEExtension); !ok {
+		t.Fatalf("expected first extension to be GREASE, got %T", spec.Extensions[0])
+	}
+	if _, ok := spec.Extensions[len(spec.Extensions)-1].(*utls.UtlsGREASEExtension); !ok {
+		t.Fatalf("expected last extension to be GREASE, got %T", spec.Extensions[len(spec.Extensions)-1])
+	}
+
+	var (
+		curvesExt   *utls.SupportedCurvesExtension
+		keyShareExt *utls.KeyShareExtension
+		versionExt  *utls.SupportedVersionsExtension
+	)
+	for _, ext := range spec.Extensions {
+		switch e := ext.(type) {
+		case *utls.SupportedCurvesExtension:
+			curvesExt = e
+		case *utls.KeyShareExtension:
+			keyShareExt = e
+		case *utls.SupportedVersionsExtension:
+			versionExt = e
+		}
+	}
+
+	if curvesExt == nil || len(curvesExt.Curves) == 0 || curvesExt.Curves[0] != utls.CurveID(utls.GREASE_PLACEHOLDER) {
+		t.Fatalf("expected GREASE supported_groups placeholder, got %+v", curvesExt)
+	}
+	if keyShareExt == nil || len(keyShareExt.KeyShares) == 0 || keyShareExt.KeyShares[0].Group != utls.CurveID(utls.GREASE_PLACEHOLDER) {
+		t.Fatalf("expected GREASE key_share placeholder, got %+v", keyShareExt)
+	}
+	if versionExt == nil || len(versionExt.Versions) == 0 || versionExt.Versions[0] != utls.GREASE_PLACEHOLDER {
+		t.Fatalf("expected GREASE supported_versions placeholder, got %+v", versionExt)
 	}
 }
 

@@ -335,22 +335,22 @@ func isGREASEValue(v uint16) bool {
 // This is a standalone function that can be used by both Dialer and HTTPProxyDialer.
 func buildClientHelloSpecFromProfile(profile *Profile) *utls.ClientHelloSpec {
 	// Resolve effective values (profile overrides or built-in defaults)
-	cipherSuites := defaultCipherSuites
+	cipherSuites := append([]uint16(nil), defaultCipherSuites...)
 	if profile != nil && len(profile.CipherSuites) > 0 {
-		cipherSuites = profile.CipherSuites
+		cipherSuites = append([]uint16(nil), profile.CipherSuites...)
 	}
 
-	curves := defaultCurves
+	curves := append([]utls.CurveID(nil), defaultCurves...)
 	if profile != nil && len(profile.Curves) > 0 {
 		curves = toUTLSCurves(profile.Curves)
 	}
 
-	pointFormats := defaultPointFormats
+	pointFormats := append([]uint16(nil), defaultPointFormats...)
 	if profile != nil && len(profile.PointFormats) > 0 {
-		pointFormats = profile.PointFormats
+		pointFormats = append([]uint16(nil), profile.PointFormats...)
 	}
 
-	signatureAlgorithms := defaultSignatureAlgorithms
+	signatureAlgorithms := append([]utls.SignatureScheme(nil), defaultSignatureAlgorithms...)
 	if profile != nil && len(profile.SignatureAlgorithms) > 0 {
 		signatureAlgorithms = make([]utls.SignatureScheme, len(profile.SignatureAlgorithms))
 		for i, s := range profile.SignatureAlgorithms {
@@ -360,12 +360,12 @@ func buildClientHelloSpecFromProfile(profile *Profile) *utls.ClientHelloSpec {
 
 	alpnProtocols := []string{"http/1.1"}
 	if profile != nil && len(profile.ALPNProtocols) > 0 {
-		alpnProtocols = profile.ALPNProtocols
+		alpnProtocols = append([]string(nil), profile.ALPNProtocols...)
 	}
 
 	supportedVersions := []uint16{utls.VersionTLS13, utls.VersionTLS12}
 	if profile != nil && len(profile.SupportedVersions) > 0 {
-		supportedVersions = profile.SupportedVersions
+		supportedVersions = append([]uint16(nil), profile.SupportedVersions...)
 	}
 
 	keyShareGroups := []utls.CurveID{utls.X25519}
@@ -375,21 +375,35 @@ func buildClientHelloSpecFromProfile(profile *Profile) *utls.ClientHelloSpec {
 
 	pskModes := []uint16{uint16(utls.PskModeDHE)}
 	if profile != nil && len(profile.PSKModes) > 0 {
-		pskModes = profile.PSKModes
+		pskModes = append([]uint16(nil), profile.PSKModes...)
 	}
 
 	enableGREASE := profile != nil && profile.EnableGREASE
+	if enableGREASE {
+		// BoringSSL/Chrome 风格的 GREASE 不仅体现在扩展 bookends，
+		// 还会插入到 cipher suites、supported_groups、key_share、
+		// supported_versions 等列表中。
+		cipherSuites = prependGREASEUint16(cipherSuites)
+		curves = prependGREASECurveID(curves)
+		supportedVersions = prependGREASEUint16(supportedVersions)
+	}
 
 	// Build key shares
 	keyShares := make([]utls.KeyShare, len(keyShareGroups))
 	for i, g := range keyShareGroups {
 		keyShares[i] = utls.KeyShare{Group: g}
 	}
+	if enableGREASE {
+		keyShares = prependGREASEKeyShare(keyShares)
+	}
 
 	// Determine extension order
-	extOrder := defaultExtensionOrder
+	extOrder := append([]uint16(nil), defaultExtensionOrder...)
 	if profile != nil && len(profile.Extensions) > 0 {
-		extOrder = profile.Extensions
+		extOrder = append([]uint16(nil), profile.Extensions...)
+	}
+	if enableGREASE {
+		extOrder = wrapGREASEExtensionOrder(extOrder)
 	}
 
 	// Build extensions list from the ordered IDs.
@@ -441,12 +455,6 @@ func buildClientHelloSpecFromProfile(profile *Profile) *utls.ClientHelloSpec {
 		}
 	}
 
-	// For default extension order with EnableGREASE, wrap with GREASE bookends
-	if enableGREASE && (profile == nil || len(profile.Extensions) == 0) {
-		extensions = append([]utls.TLSExtension{&utls.UtlsGREASEExtension{}}, extensions...)
-		extensions = append(extensions, &utls.UtlsGREASEExtension{})
-	}
-
 	return &utls.ClientHelloSpec{
 		CipherSuites:       cipherSuites,
 		CompressionMethods: []uint8{0}, // null compression only (standard)
@@ -454,6 +462,47 @@ func buildClientHelloSpecFromProfile(profile *Profile) *utls.ClientHelloSpec {
 		TLSVersMax:         utls.VersionTLS13,
 		TLSVersMin:         utls.VersionTLS10,
 	}
+}
+
+func prependGREASEUint16(vals []uint16) []uint16 {
+	for _, v := range vals {
+		if isGREASEValue(v) {
+			return vals
+		}
+	}
+	return append([]uint16{utls.GREASE_PLACEHOLDER}, vals...)
+}
+
+func prependGREASECurveID(vals []utls.CurveID) []utls.CurveID {
+	for _, v := range vals {
+		if isGREASEValue(uint16(v)) {
+			return vals
+		}
+	}
+	return append([]utls.CurveID{utls.CurveID(utls.GREASE_PLACEHOLDER)}, vals...)
+}
+
+func prependGREASEKeyShare(vals []utls.KeyShare) []utls.KeyShare {
+	for _, v := range vals {
+		if isGREASEValue(uint16(v.Group)) {
+			return vals
+		}
+	}
+	return append([]utls.KeyShare{{Group: utls.CurveID(utls.GREASE_PLACEHOLDER), Data: []byte{0}}}, vals...)
+}
+
+func wrapGREASEExtensionOrder(extOrder []uint16) []uint16 {
+	for _, id := range extOrder {
+		if isGREASEValue(id) {
+			return extOrder
+		}
+	}
+
+	out := make([]uint16, 0, len(extOrder)+2)
+	out = append(out, utls.GREASE_PLACEHOLDER)
+	out = append(out, extOrder...)
+	out = append(out, utls.GREASE_PLACEHOLDER)
+	return out
 }
 
 // toUint8s converts []uint16 to []uint8 (for utls fields that require []uint8).
