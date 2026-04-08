@@ -29,6 +29,7 @@ var headerWireCasing = map[string]string{
 	// Anthropic SDK 自身设置的 header，全小写
 	"anthropic-dangerous-direct-browser-access": "anthropic-dangerous-direct-browser-access",
 	"anthropic-version":                         "anthropic-version",
+	"x-anthropic-billing-header":                "x-anthropic-billing-header",
 	"anthropic-beta":                            "anthropic-beta",
 	"x-app":                                     "x-app",
 	"content-type":                              "content-type",
@@ -57,6 +58,7 @@ var headerWireOrder = []string{
 	"X-Stainless-Runtime-Version",
 	"anthropic-dangerous-direct-browser-access",
 	"anthropic-version",
+	"x-anthropic-billing-header",
 	"authorization",
 	"x-app",
 	"User-Agent",

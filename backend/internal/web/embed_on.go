@@ -251,19 +251,6 @@ func ServeEmbeddedFrontend() gin.HandlerFunc {
 	}
 }
 
-func shouldBypassEmbeddedFrontend(path string) bool {
-	trimmed := strings.TrimSpace(path)
-	return strings.HasPrefix(trimmed, "/api/") ||
-		strings.HasPrefix(trimmed, "/v1/") ||
-		strings.HasPrefix(trimmed, "/v1beta/") ||
-		strings.HasPrefix(trimmed, "/sora/") ||
-		strings.HasPrefix(trimmed, "/antigravity/") ||
-		strings.HasPrefix(trimmed, "/setup/") ||
-		trimmed == "/health" ||
-		trimmed == "/responses" ||
-		strings.HasPrefix(trimmed, "/responses/")
-}
-
 func serveIndexHTML(c *gin.Context, fsys fs.FS) {
 	file, err := fsys.Open("index.html")
 	if err != nil {

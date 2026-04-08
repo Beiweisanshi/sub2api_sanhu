@@ -505,6 +505,7 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 	// Identity patch configuration (Claude -> Gemini)
 	updates[SettingKeyEnableIdentityPatch] = strconv.FormatBool(settings.EnableIdentityPatch)
 	updates[SettingKeyIdentityPatchPrompt] = settings.IdentityPatchPrompt
+	updates[SettingKeyTelemetryEnabled] = strconv.FormatBool(settings.TelemetryEnabled)
 
 	// Ops monitoring (vNext)
 	updates[SettingKeyOpsMonitoringEnabled] = strconv.FormatBool(settings.OpsMonitoringEnabled)
@@ -550,6 +551,9 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 		})
 		if s.onUpdate != nil {
 			s.onUpdate() // Invalidate cache after settings update
+		}
+		if s.cfg != nil {
+			s.cfg.Telemetry.Enabled = settings.TelemetryEnabled
 		}
 	}
 	return err
@@ -847,6 +851,12 @@ func (s *SettingService) InitializeDefaultSettings(ctx context.Context) error {
 		// Identity patch defaults
 		SettingKeyEnableIdentityPatch: "true",
 		SettingKeyIdentityPatchPrompt: "",
+		SettingKeyTelemetryEnabled: func() string {
+			if s.cfg != nil {
+				return strconv.FormatBool(s.cfg.Telemetry.Enabled)
+			}
+			return "true"
+		}(),
 
 		// Ops monitoring defaults (vNext)
 		SettingKeyOpsMonitoringEnabled:         "true",
@@ -973,6 +983,17 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 		result.EnableIdentityPatch = true
 	}
 	result.IdentityPatchPrompt = settings[SettingKeyIdentityPatchPrompt]
+
+	// Telemetry settings:
+	// - 默认跟随 config/env
+	// - 支持在后台系统设置中运行时开关
+	if v, ok := settings[SettingKeyTelemetryEnabled]; ok && v != "" {
+		result.TelemetryEnabled = v == "true"
+	} else if s.cfg != nil {
+		result.TelemetryEnabled = s.cfg.Telemetry.Enabled
+	} else {
+		result.TelemetryEnabled = true
+	}
 
 	// Ops monitoring settings (default: enabled, fail-open)
 	result.OpsMonitoringEnabled = !isFalseSettingValue(settings[SettingKeyOpsMonitoringEnabled])

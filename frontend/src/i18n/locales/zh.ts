@@ -1789,6 +1789,14 @@ export default {
         enabled: '已启用',
         disabled: '已禁用'
       },
+      simulateCache: {
+        title: '模拟缓存',
+        tooltip: '启用后，将按设定比例将 input_tokens 虚拟转换为 cache_read_input_tokens，从而降低计费费用并在客户端显示缓存命中效果。适用于反重力平台的缓存交叉场景。',
+        enabled: '已启用',
+        disabled: '已禁用',
+        ratio: '缓存读取率',
+        ratioHint: '设定 input_tokens 中转换为 cache_read_input_tokens 的比例（推荐 60%-80%）'
+      },
       supportedScopes: {
         title: '支持的模型系列',
         tooltip: '选择此分组支持的模型系列。未勾选的系列将不会被路由到此分组。',
@@ -2350,9 +2358,9 @@ export default {
         enableSoraHint: 'Sora 使用相同的 OpenAI 账号，开启后将同时创建 Sora 平台账号'
       },
       anthropic: {
-        apiKeyPassthrough: '自动透传（仅替换认证）',
+        apiKeyPassthrough: '自动透传（仅替换 URL / API Key）',
         apiKeyPassthroughDesc:
-          '仅对 Anthropic API Key 生效。开启后，messages/count_tokens 请求将透传上游并仅替换认证，保留计费/并发/审计及必要安全过滤；关闭即可回滚到现有兼容链路。'
+          '仅对 Anthropic API Key 生效。开启后，messages/count_tokens 请求将完整透传到上游，仅替换上游 URL 与 API Key；请求体、非鉴权请求头、响应体与响应头尽量保持原样。'
       },
       modelRestriction: '模型限制（可选）',
       modelWhitelist: '模型白名单',
@@ -4338,6 +4346,12 @@ export default {
         maxVersion: '最高版本号',
         maxVersionPlaceholder: '例如 2.5.0',
         maxVersionHint: '拒绝高于此版本的 Claude Code 客户端请求（semver 格式）。留空则不限制最高版本。'
+      },
+      telemetry: {
+        title: '遥测代理',
+        description: '控制 Claude Code 遥测改写与转发功能',
+        enabled: '启用遥测代理',
+        enabledHint: '关闭后，相关遥测端点仍返回 200，但不会执行改写或转发。'
       },
       scheduling: {
         title: '网关调度设置',

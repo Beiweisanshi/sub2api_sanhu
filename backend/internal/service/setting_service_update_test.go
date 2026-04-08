@@ -202,3 +202,20 @@ func TestParseDefaultSubscriptions_NormalizesValues(t *testing.T) {
 		{GroupID: 12, ValidityDays: MaxValidityDays},
 	}, got)
 }
+
+func TestSettingService_UpdateSettings_TelemetryEnabledPersistsAndUpdatesConfig(t *testing.T) {
+	repo := &settingUpdateRepoStub{}
+	cfg := &config.Config{
+		Telemetry: config.TelemetryConfig{
+			Enabled: true,
+		},
+	}
+	svc := NewSettingService(repo, cfg)
+
+	err := svc.UpdateSettings(context.Background(), &SystemSettings{
+		TelemetryEnabled: false,
+	})
+	require.NoError(t, err)
+	require.Equal(t, "false", repo.updates[SettingKeyTelemetryEnabled])
+	require.False(t, cfg.Telemetry.Enabled)
+}

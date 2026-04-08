@@ -1701,6 +1701,14 @@ export default {
         enabled: 'Enabled',
         disabled: 'Disabled'
       },
+      simulateCache: {
+        title: 'Simulated Cache',
+        tooltip: 'When enabled, converts a configured ratio of input_tokens to cache_read_input_tokens, reducing billing costs and showing cache hit effect to clients. Designed for antigravity platform cache cross-pollination scenarios.',
+        enabled: 'Enabled',
+        disabled: 'Disabled',
+        ratio: 'Cache Read Ratio',
+        ratioHint: 'Ratio of input_tokens to convert to cache_read_input_tokens (recommended 60%-80%)'
+      },
       claudeMaxSimulation: {
         title: 'Claude Max Usage Simulation',
         tooltip:
@@ -4175,6 +4183,12 @@ export default {
         maxVersionPlaceholder: 'e.g. 2.5.0',
         maxVersionHint:
           'Reject Claude Code clients above this version (semver format). Leave empty to allow any version.'
+      },
+      telemetry: {
+        title: 'Telemetry Proxy',
+        description: 'Control Claude Code telemetry rewrite and forwarding behavior',
+        enabled: 'Enable Telemetry Proxy',
+        enabledHint: 'When disabled, telemetry endpoints still return 200 but no rewrite or forwarding is performed.'
       },
       scheduling: {
         title: 'Gateway Scheduling Settings',

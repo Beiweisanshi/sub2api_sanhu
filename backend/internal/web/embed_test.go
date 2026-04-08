@@ -616,7 +616,7 @@ func TestServeEmbeddedFrontend(t *testing.T) {
 		router := gin.New()
 		router.Use(middleware)
 
-		spaPaths := []string{"/dashboard", "/users/123", "/settings"}
+		spaPaths := []string{"/dashboard", "/users/123"}
 
 		for _, path := range spaPaths {
 			t.Run(path, func(t *testing.T) {
@@ -641,6 +641,8 @@ func TestServeEmbeddedFrontend(t *testing.T) {
 			"/antigravity/test",
 			"/setup/init",
 			"/health",
+			"/policy_limits",
+			"/settings",
 			"/responses",
 			"/responses/compact",
 		}

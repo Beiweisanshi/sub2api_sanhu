@@ -83,6 +83,7 @@ type Config struct {
 	Gemini                  GeminiConfig                  `mapstructure:"gemini"`
 	Update                  UpdateConfig                  `mapstructure:"update"`
 	Idempotency             IdempotencyConfig             `mapstructure:"idempotency"`
+	Telemetry               TelemetryConfig               `mapstructure:"telemetry"`
 }
 
 type LogConfig struct {
@@ -975,6 +976,73 @@ type UsageCleanupConfig struct {
 	TaskTimeoutSeconds int `mapstructure:"task_timeout_seconds"`
 }
 
+// TelemetryConfig controls telemetry event proxying and system prompt sanitization.
+type TelemetryConfig struct {
+	// Enabled: master switch for telemetry proxying and enhanced prompt sanitization
+	Enabled bool `mapstructure:"enabled"`
+	// ForwardEvents: whether to actually forward rewritten events upstream
+	// When false, routes accept events, rewrite them (for logging), but return 200 without forwarding
+	ForwardEvents bool `mapstructure:"forward_events"`
+	// UpstreamURL: telemetry upstream base URL (default: "https://api.anthropic.com")
+	UpstreamURL string `mapstructure:"upstream_url"`
+	// Identity: canonical identity values for rewriting telemetry events
+	Identity TelemetryIdentityConfig `mapstructure:"identity"`
+	// CanonicalEnv: values to replace the entire `env` object in telemetry events
+	CanonicalEnv TelemetryCanonicalEnvConfig `mapstructure:"canonical_env"`
+	// Process: ranges for randomized memory metrics in the `process` field
+	Process TelemetryProcessConfig `mapstructure:"process"`
+	// PromptEnv: values used to rewrite the <env> block in system prompts (/v1/messages)
+	PromptEnv TelemetryPromptEnvConfig `mapstructure:"prompt_env"`
+	// LeakFields: field names to delete from event_data (e.g., ["baseUrl","base_url","gateway"])
+	LeakFields []string `mapstructure:"leak_fields"`
+}
+
+// TelemetryIdentityConfig holds canonical identity values for telemetry rewriting.
+type TelemetryIdentityConfig struct {
+	// DeviceID: canonical 64-char hex device ID (auto-generated if empty)
+	DeviceID string `mapstructure:"device_id"`
+	// Email: canonical email address for telemetry events
+	Email string `mapstructure:"email"`
+}
+
+// TelemetryCanonicalEnvConfig holds the canonical environment object that replaces
+// the real env in telemetry events (mirrors cc-gateway's buildCanonicalEnv).
+type TelemetryCanonicalEnvConfig struct {
+	Platform              string `mapstructure:"platform"`
+	PlatformRaw           string `mapstructure:"platform_raw"`
+	Arch                  string `mapstructure:"arch"`
+	NodeVersion           string `mapstructure:"node_version"`
+	Terminal              string `mapstructure:"terminal"`
+	PackageManagers       string `mapstructure:"package_managers"`
+	Runtimes              string `mapstructure:"runtimes"`
+	IsRunningWithBun      bool   `mapstructure:"is_running_with_bun"`
+	IsClaudeAIAuth        bool   `mapstructure:"is_claude_ai_auth"`
+	Version               string `mapstructure:"version"`
+	VersionBase           string `mapstructure:"version_base"`
+	BuildTime             string `mapstructure:"build_time"`
+	DeploymentEnvironment string `mapstructure:"deployment_environment"`
+	VCS                   string `mapstructure:"vcs"`
+}
+
+// TelemetryProcessConfig holds ranges for randomizing process memory metrics.
+type TelemetryProcessConfig struct {
+	ConstrainedMemory int64 `mapstructure:"constrained_memory"` // fixed value (bytes)
+	RssMin            int64 `mapstructure:"rss_min"`            // min RSS (bytes)
+	RssMax            int64 `mapstructure:"rss_max"`            // max RSS (bytes)
+	HeapTotalMin      int64 `mapstructure:"heap_total_min"`     // min heapTotal (bytes)
+	HeapTotalMax      int64 `mapstructure:"heap_total_max"`     // max heapTotal (bytes)
+	HeapUsedMin       int64 `mapstructure:"heap_used_min"`      // min heapUsed (bytes)
+	HeapUsedMax       int64 `mapstructure:"heap_used_max"`      // max heapUsed (bytes)
+}
+
+// TelemetryPromptEnvConfig holds values for rewriting the <env> block in system prompts.
+type TelemetryPromptEnvConfig struct {
+	Platform   string `mapstructure:"platform"`
+	Shell      string `mapstructure:"shell"`
+	OSVersion  string `mapstructure:"os_version"`
+	WorkingDir string `mapstructure:"working_dir"`
+}
+
 func NormalizeRunMode(value string) string {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	switch normalized {
@@ -1091,6 +1159,16 @@ func load(allowMissingJWTSecret bool) (*Config, error) {
 		slog.Warn("TOTP encryption key auto-generated. Consider setting a fixed key for production.")
 	} else {
 		cfg.Totp.EncryptionKeyConfigured = true
+	}
+
+	cfg.Telemetry.Identity.DeviceID = strings.ToLower(strings.TrimSpace(cfg.Telemetry.Identity.DeviceID))
+	if cfg.Telemetry.Enabled && cfg.Telemetry.Identity.DeviceID == "" {
+		deviceID, err := generateJWTSecret(32)
+		if err != nil {
+			return nil, fmt.Errorf("generate telemetry device_id error: %w", err)
+		}
+		cfg.Telemetry.Identity.DeviceID = deviceID
+		slog.Warn("telemetry.identity.device_id auto-generated for this process; configure a fixed value to keep it stable across restarts.")
 	}
 
 	originalJWTSecret := cfg.JWT.Secret
@@ -1522,6 +1600,39 @@ func setDefaults() {
 	// Subscription Maintenance (bounded queue + worker pool)
 	viper.SetDefault("subscription_maintenance.worker_count", 2)
 	viper.SetDefault("subscription_maintenance.queue_size", 1024)
+
+	// Telemetry proxy
+	viper.SetDefault("telemetry.enabled", true)
+	viper.SetDefault("telemetry.forward_events", true)
+	viper.SetDefault("telemetry.upstream_url", "https://api.anthropic.com")
+	viper.SetDefault("telemetry.identity.device_id", "")
+	viper.SetDefault("telemetry.identity.email", "user@example.com")
+	viper.SetDefault("telemetry.canonical_env.platform", "linux")
+	viper.SetDefault("telemetry.canonical_env.platform_raw", "linux")
+	viper.SetDefault("telemetry.canonical_env.arch", "x64")
+	viper.SetDefault("telemetry.canonical_env.node_version", "v24.13.0")
+	viper.SetDefault("telemetry.canonical_env.terminal", "xterm-256color")
+	viper.SetDefault("telemetry.canonical_env.package_managers", "npm,pnpm")
+	viper.SetDefault("telemetry.canonical_env.runtimes", "node,bun")
+	viper.SetDefault("telemetry.canonical_env.is_running_with_bun", false)
+	viper.SetDefault("telemetry.canonical_env.is_claude_ai_auth", true)
+	viper.SetDefault("telemetry.canonical_env.version", "2.1.22")
+	viper.SetDefault("telemetry.canonical_env.version_base", "2.1.22")
+	viper.SetDefault("telemetry.canonical_env.build_time", "2025-06-01T00:00:00Z")
+	viper.SetDefault("telemetry.canonical_env.deployment_environment", "production")
+	viper.SetDefault("telemetry.canonical_env.vcs", "git")
+	viper.SetDefault("telemetry.process.constrained_memory", int64(16*1024*1024*1024)) // 16GB
+	viper.SetDefault("telemetry.process.rss_min", int64(80*1024*1024))                 // 80MB
+	viper.SetDefault("telemetry.process.rss_max", int64(200*1024*1024))                // 200MB
+	viper.SetDefault("telemetry.process.heap_total_min", int64(60*1024*1024))          // 60MB
+	viper.SetDefault("telemetry.process.heap_total_max", int64(150*1024*1024))         // 150MB
+	viper.SetDefault("telemetry.process.heap_used_min", int64(40*1024*1024))           // 40MB
+	viper.SetDefault("telemetry.process.heap_used_max", int64(120*1024*1024))          // 120MB
+	viper.SetDefault("telemetry.prompt_env.platform", "linux")
+	viper.SetDefault("telemetry.prompt_env.shell", "/bin/bash")
+	viper.SetDefault("telemetry.prompt_env.os_version", "Linux 6.1.0")
+	viper.SetDefault("telemetry.prompt_env.working_dir", "/home/user/project")
+	viper.SetDefault("telemetry.leak_fields", []string{"baseUrl", "base_url", "gateway"})
 
 }
 
@@ -2256,6 +2367,18 @@ func (c *Config) Validate() error {
 	}
 	if c.Concurrency.PingInterval < 5 || c.Concurrency.PingInterval > 30 {
 		return fmt.Errorf("concurrency.ping_interval must be between 5-30 seconds")
+	}
+	if c.Telemetry.Enabled {
+		deviceID := strings.TrimSpace(c.Telemetry.Identity.DeviceID)
+		if deviceID == "" {
+			return fmt.Errorf("telemetry.identity.device_id is required when telemetry.enabled=true")
+		}
+		if len(deviceID) != 64 {
+			return fmt.Errorf("telemetry.identity.device_id must be a 64-character hex string when telemetry.enabled=true")
+		}
+		if _, err := hex.DecodeString(deviceID); err != nil {
+			return fmt.Errorf("telemetry.identity.device_id must be valid hex when telemetry.enabled=true")
+		}
 	}
 	return nil
 }

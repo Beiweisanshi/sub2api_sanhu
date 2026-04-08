@@ -112,4 +112,7 @@ func registerRoutes(
 	routes.RegisterSoraClientRoutes(v1, h, jwtAuth, settingService)
 	routes.RegisterAdminRoutes(v1, h, adminAuth)
 	routes.RegisterGatewayRoutes(r, h, apiKeyAuth, apiKeyService, subscriptionService, opsService, settingService, cfg)
+
+	// Telemetry proxy routes (Claude Code event logging)
+	routes.RegisterTelemetryRoutes(r, h, opsService, cfg)
 }

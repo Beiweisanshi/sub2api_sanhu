@@ -88,6 +88,7 @@ func ProvideHandlers(
 	soraClientHandler *SoraClientHandler,
 	settingHandler *SettingHandler,
 	totpHandler *TotpHandler,
+	telemetryHandler *TelemetryHandler,
 	_ *service.IdempotencyCoordinator,
 	_ *service.IdempotencyCleanupService,
 ) *Handlers {
@@ -106,6 +107,7 @@ func ProvideHandlers(
 		SoraClient:    soraClientHandler,
 		Setting:       settingHandler,
 		Totp:          totpHandler,
+		Telemetry:     telemetryHandler,
 	}
 }
 
@@ -123,6 +125,7 @@ var ProviderSet = wire.NewSet(
 	NewOpenAIGatewayHandler,
 	NewSoraGatewayHandler,
 	NewTotpHandler,
+	NewTelemetryHandler,
 	ProvideSettingHandler,
 
 	// Admin handlers

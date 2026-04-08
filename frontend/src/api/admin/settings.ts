@@ -74,6 +74,9 @@ export interface SystemSettings {
   enable_identity_patch: boolean
   identity_patch_prompt: string
 
+  // Telemetry proxy runtime switch
+  telemetry_enabled: boolean
+
   // Ops Monitoring (vNext)
   ops_monitoring_enabled: boolean
   ops_realtime_monitoring_enabled: boolean
@@ -139,6 +142,7 @@ export interface UpdateSettingsRequest {
   fallback_model_antigravity?: string
   enable_identity_patch?: boolean
   identity_patch_prompt?: string
+  telemetry_enabled?: boolean
   ops_monitoring_enabled?: boolean
   ops_realtime_monitoring_enabled?: boolean
   ops_query_mode_default?: 'auto' | 'raw' | 'preagg' | string

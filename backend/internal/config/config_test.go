@@ -192,6 +192,26 @@ func TestLoadDefaultIdempotencyConfig(t *testing.T) {
 	}
 }
 
+func TestLoadGeneratesTelemetryDeviceIDWhenEnabledWithoutDeviceID(t *testing.T) {
+	resetViperWithJWTSecret(t)
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.True(t, cfg.Telemetry.Enabled)
+	require.Regexp(t, "^[0-9a-f]{64}$", cfg.Telemetry.Identity.DeviceID)
+}
+
+func TestLoadAcceptsTelemetryEnabledWithValidDeviceID(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	t.Setenv("TELEMETRY_ENABLED", "true")
+	t.Setenv("TELEMETRY_IDENTITY_DEVICE_ID", strings.Repeat("a", 64))
+
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.True(t, cfg.Telemetry.Enabled)
+	require.Equal(t, strings.Repeat("a", 64), cfg.Telemetry.Identity.DeviceID)
+}
+
 func TestLoadIdempotencyConfigFromEnv(t *testing.T) {
 	resetViperWithJWTSecret(t)
 	t.Setenv("IDEMPOTENCY_OBSERVE_ONLY", "false")

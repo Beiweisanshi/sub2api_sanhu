@@ -143,6 +143,9 @@ const (
 	SettingKeyEnableIdentityPatch = "enable_identity_patch"
 	SettingKeyIdentityPatchPrompt = "identity_patch_prompt"
 
+	// Telemetry proxy runtime switch
+	SettingKeyTelemetryEnabled = "telemetry_enabled"
+
 	// =========================
 	// Ops Monitoring (vNext)
 	// =========================
