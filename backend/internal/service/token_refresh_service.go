@@ -487,16 +487,24 @@ func (s *TokenRefreshService) ensureOpenAIPrivacy(ctx context.Context, account *
 }
 
 // ensureAntigravityPrivacy 后台刷新中检查 Antigravity OAuth 账号隐私状态。
-// 仅做 Extra["privacy_mode"] 存在性检查，不发起 HTTP 请求，避免每轮循环产生额外网络开销。
-// 用户可通过前端 SetPrivacy 按钮强制重新设置。
+// 如果 privacy_mode 未设置过，或者之前因缺少 project_id 而失败（现在 project_id 已获取到），
+// 则尝试设置隐私。用户也可通过前端 SetPrivacy 按钮强制重新设置。
 func (s *TokenRefreshService) ensureAntigravityPrivacy(ctx context.Context, account *Account) {
 	if account.Platform != PlatformAntigravity || account.Type != AccountTypeOAuth {
 		return
 	}
-	// 已设置过（无论成功或失败）则跳过，不发 HTTP
+	projectID, _ := account.Credentials["project_id"].(string)
 	if account.Extra != nil {
-		if _, ok := account.Extra["privacy_mode"]; ok {
-			return
+		if existing, ok := account.Extra["privacy_mode"].(string); ok {
+			// 之前失败 + 现在 project_id 已有值 → 重试
+			if existing == AntigravityPrivacyFailed && strings.TrimSpace(projectID) != "" {
+				slog.Info("token_refresh.antigravity_privacy_retry_with_project_id",
+					"account_id", account.ID,
+				)
+				// 继续往下执行重试
+			} else {
+				return
+			}
 		}
 	}
 
@@ -504,8 +512,6 @@ func (s *TokenRefreshService) ensureAntigravityPrivacy(ctx context.Context, acco
 	if token == "" {
 		return
 	}
-
-	projectID, _ := account.Credentials["project_id"].(string)
 
 	var proxyURL string
 	if account.ProxyID != nil && s.proxyRepo != nil {

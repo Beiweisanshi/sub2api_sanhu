@@ -69,6 +69,10 @@ type APIKeyAuthGroupSnapshot struct {
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
 	AllowMessagesDispatch bool   `json:"allow_messages_dispatch"`
 	DefaultMappedModel    string `json:"default_mapped_model,omitempty"`
+
+	// 模拟缓存配置（仅 antigravity 平台使用）
+	SimulateCacheEnabled bool    `json:"simulate_cache_enabled"`
+	SimulateCacheRatio   float64 `json:"simulate_cache_ratio"`
 }
 
 // APIKeyAuthCacheEntry 缓存条目，支持负缓存

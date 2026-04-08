@@ -488,6 +488,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					IPAddress:          clientIP,
 					RequestPayloadHash: requestPayloadHash,
 					ForceCacheBilling:  fs.ForceCacheBilling,
+					SimulateCacheRatio: getGroupSimulateCacheRatio(apiKey),
 					APIKeyService:      h.apiKeyService,
 				}); err != nil {
 					logger.L().With(
@@ -820,6 +821,7 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 					IPAddress:          clientIP,
 					RequestPayloadHash: requestPayloadHash,
 					ForceCacheBilling:  fs.ForceCacheBilling,
+					SimulateCacheRatio: getGroupSimulateCacheRatio(currentAPIKey),
 					APIKeyService:      h.apiKeyService,
 				}); err != nil {
 					logger.L().With(

@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -109,6 +108,7 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardStreamPreservesBodyAnd
 	c.Request.Header.Set("X-Goog-Api-Key", "inbound-goog-key")
 	c.Request.Header.Set("Cookie", "secret=1")
 	c.Request.Header.Set("Anthropic-Beta", "interleaved-thinking-2025-05-14")
+	c.Request.Header.Set("X-Anthropic-Billing-Header", "cc_version=9.9.9.abc; cc_entrypoint=cli")
 
 	body := []byte(`{"model":"claude-3-7-sonnet-20250219","stream":true,"system":[{"type":"text","text":"x-anthropic-billing-header keep"}],"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}`)
 	parsed := &ParsedRequest{
@@ -140,6 +140,11 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardStreamPreservesBodyAnd
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			MaxLineSize: defaultMaxLineSize,
+		},
+		Telemetry: config.TelemetryConfig{
+			CanonicalEnv: config.TelemetryCanonicalEnvConfig{
+				Version: "2.1.99",
+			},
 		},
 	}
 	svc := &GatewayService{
@@ -174,25 +179,26 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardStreamPreservesBodyAnd
 	require.NotNil(t, result)
 	require.True(t, result.Stream)
 
-	require.Equal(t, "claude-3-haiku-20240307", gjson.GetBytes(upstream.lastBody, "model").String(), "透传模式应应用账号级模型映射")
+	require.Equal(t, body, upstream.lastBody, "完整透传模式不应改写请求体")
 
 	require.Equal(t, "upstream-anthropic-key", getHeaderRaw(upstream.lastReq.Header, "x-api-key"))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "authorization"))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "x-goog-api-key"))
-	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "cookie"))
-	require.Equal(t, "2023-06-01", getHeaderRaw(upstream.lastReq.Header, "anthropic-version"))
+	require.Equal(t, "secret=1", getHeaderRaw(upstream.lastReq.Header, "cookie"))
+	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "anthropic-version"))
 	require.Equal(t, "interleaved-thinking-2025-05-14", getHeaderRaw(upstream.lastReq.Header, "anthropic-beta"))
+	require.Equal(t, "cc_version=9.9.9.abc; cc_entrypoint=cli", getHeaderRaw(upstream.lastReq.Header, "x-anthropic-billing-header"))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "x-stainless-lang"), "API Key 透传不应注入 OAuth 指纹头")
 
 	require.Contains(t, rec.Body.String(), `"cached_tokens":7`)
 	require.NotContains(t, rec.Body.String(), `"cache_read_input_tokens":7`, "透传输出不应被网关改写")
 	require.Equal(t, 7, result.Usage.CacheReadInputTokens, "计费 usage 解析应保留 cached_tokens 兼容")
-	require.Empty(t, rec.Header().Get("Set-Cookie"), "响应头应经过安全过滤")
+	require.Equal(t, "secret=upstream", rec.Header().Get("Set-Cookie"))
 	rawBody, ok := c.Get(OpsUpstreamRequestBodyKey)
 	require.True(t, ok)
 	bodyBytes, ok := rawBody.([]byte)
 	require.True(t, ok, "应以 []byte 形式缓存上游请求体，避免重复 string 拷贝")
-	require.Equal(t, "claude-3-haiku-20240307", gjson.GetBytes(bodyBytes, "model").String(), "缓存的上游请求体应包含映射后的模型")
+	require.Equal(t, body, bodyBytes, "缓存的上游请求体应保持原样")
 }
 
 func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardCountTokensPreservesBody(t *testing.T) {
@@ -204,6 +210,7 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardCountTokensPreservesBo
 	c.Request.Header.Set("Authorization", "Bearer inbound-token")
 	c.Request.Header.Set("X-Api-Key", "inbound-api-key")
 	c.Request.Header.Set("Cookie", "secret=1")
+	c.Request.Header.Set("X-Anthropic-Billing-Header", "cc_version=8.8.8.def; cc_entrypoint=cli")
 
 	body := []byte(`{"model":"claude-3-5-sonnet-latest","messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}],"thinking":{"type":"enabled"}}`)
 	parsed := &ParsedRequest{
@@ -227,6 +234,11 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardCountTokensPreservesBo
 	cfg := &config.Config{
 		Gateway: config.GatewayConfig{
 			MaxLineSize: defaultMaxLineSize,
+		},
+		Telemetry: config.TelemetryConfig{
+			CanonicalEnv: config.TelemetryCanonicalEnvConfig{
+				Version: "2.1.99",
+			},
 		},
 	}
 	svc := &GatewayService{
@@ -257,17 +269,18 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardCountTokensPreservesBo
 	err := svc.ForwardCountTokens(context.Background(), c, account, parsed)
 	require.NoError(t, err)
 
-	require.Equal(t, "claude-3-opus-20240229", gjson.GetBytes(upstream.lastBody, "model").String(), "count_tokens 透传模式应应用账号级模型映射")
+	require.Equal(t, body, upstream.lastBody, "count_tokens 完整透传模式不应改写请求体")
 	require.Equal(t, "upstream-anthropic-key", getHeaderRaw(upstream.lastReq.Header, "x-api-key"))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "authorization"))
-	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "cookie"))
+	require.Equal(t, "secret=1", getHeaderRaw(upstream.lastReq.Header, "cookie"))
+	require.Equal(t, "cc_version=8.8.8.def; cc_entrypoint=cli", getHeaderRaw(upstream.lastReq.Header, "x-anthropic-billing-header"))
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.JSONEq(t, upstreamRespBody, rec.Body.String())
-	require.Empty(t, rec.Header().Get("Set-Cookie"))
+	require.Equal(t, "secret=upstream", rec.Header().Get("Set-Cookie"))
 }
 
-// TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingEdgeCases 覆盖透传模式下模型映射的各种边界情况
-func TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingEdgeCases(t *testing.T) {
+// TestGatewayService_AnthropicAPIKeyPassthrough_IgnoresModelMapping 验证完整透传模式下忽略 model_mapping。
+func TestGatewayService_AnthropicAPIKeyPassthrough_IgnoresModelMapping(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
@@ -299,17 +312,17 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingEdgeCases(t *test
 			endpoint:      "messages",
 		},
 		{
-			name:          "Forward: 精确匹配映射应改写模型",
+			name:          "Forward: 精确匹配映射时仍保持原模型",
 			model:         "claude-sonnet-4-20250514",
 			modelMapping:  map[string]any{"claude-sonnet-4-20250514": "claude-sonnet-4-5-20241022"},
-			expectedModel: "claude-sonnet-4-5-20241022",
+			expectedModel: "claude-sonnet-4-20250514",
 			endpoint:      "messages",
 		},
 		{
-			name:          "Forward: 通配符映射应改写模型",
+			name:          "Forward: 通配符映射时仍保持原模型",
 			model:         "claude-sonnet-4-20250514",
 			modelMapping:  map[string]any{"claude-sonnet-4-*": "claude-sonnet-4-5-20241022"},
-			expectedModel: "claude-sonnet-4-5-20241022",
+			expectedModel: "claude-sonnet-4-20250514",
 			endpoint:      "messages",
 		},
 		{
@@ -327,17 +340,17 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingEdgeCases(t *test
 			endpoint:      "count_tokens",
 		},
 		{
-			name:          "CountTokens: 精确匹配映射应改写模型",
+			name:          "CountTokens: 精确匹配映射时仍保持原模型",
 			model:         "claude-sonnet-4-20250514",
 			modelMapping:  map[string]any{"claude-sonnet-4-20250514": "claude-sonnet-4-5-20241022"},
-			expectedModel: "claude-sonnet-4-5-20241022",
+			expectedModel: "claude-sonnet-4-20250514",
 			endpoint:      "count_tokens",
 		},
 		{
-			name:          "CountTokens: 通配符映射应改写模型",
+			name:          "CountTokens: 通配符映射时仍保持原模型",
 			model:         "claude-sonnet-4-20250514",
 			modelMapping:  map[string]any{"claude-sonnet-4-*": "claude-sonnet-4-5-20241022"},
-			expectedModel: "claude-sonnet-4-5-20241022",
+			expectedModel: "claude-sonnet-4-20250514",
 			endpoint:      "count_tokens",
 		},
 	}
@@ -422,9 +435,9 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingEdgeCases(t *test
 	}
 }
 
-// TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingPreservesOtherFields
-// 确保模型映射只替换 model 字段，不影响请求体中的其他字段
-func TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingPreservesOtherFields(t *testing.T) {
+// TestGatewayService_AnthropicAPIKeyPassthrough_StrictPassthroughPreservesEntireBody
+// 确保完整透传模式下整个请求体保持原样。
+func TestGatewayService_AnthropicAPIKeyPassthrough_StrictPassthroughPreservesEntireBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()
@@ -473,12 +486,72 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingPreservesOtherFie
 	require.NoError(t, err)
 
 	sentBody := upstream.lastBody
-	require.Equal(t, "claude-sonnet-4-5-20241022", gjson.GetBytes(sentBody, "model").String(), "model 应被映射")
+	require.Equal(t, "claude-sonnet-4-20250514", gjson.GetBytes(sentBody, "model").String(), "完整透传模式不应映射 model")
 	require.Equal(t, "You are a helpful assistant.", gjson.GetBytes(sentBody, "system.0.text").String(), "system 字段不应被修改")
 	require.Equal(t, "hello world", gjson.GetBytes(sentBody, "messages.0.content.0.text").String(), "messages 字段不应被修改")
 	require.Equal(t, "enabled", gjson.GetBytes(sentBody, "thinking.type").String(), "thinking 字段不应被修改")
 	require.Equal(t, int64(5000), gjson.GetBytes(sentBody, "thinking.budget_tokens").Int(), "thinking.budget_tokens 不应被修改")
 	require.Equal(t, int64(1024), gjson.GetBytes(sentBody, "max_tokens").Int(), "max_tokens 不应被修改")
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_ClaudeCodeRequestDoesNotSanitizeBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages/count_tokens", nil)
+	c.Request.Header.Set("User-Agent", "claude-cli/1.0.0")
+
+	body := []byte(`{
+		"model":"claude-sonnet-4-20250514",
+		"system":[{"type":"text","text":"Platform: darwin\nWorking directory: /Users/kaixin/workspace/sub2api\nBilling: cc_version=2.1.22.a3f"}],
+		"messages":[{"role":"user","content":"Primary working directory: /Users/kaixin/workspace/sub2api"}]
+	}`)
+	parsed := &ParsedRequest{
+		Body:  body,
+		Model: "claude-sonnet-4-20250514",
+	}
+
+	upstream := &anthropicHTTPUpstreamRecorder{
+		resp: &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"input_tokens":42}`)),
+		},
+	}
+
+	svc := &GatewayService{
+		cfg: &config.Config{
+			Gateway: config.GatewayConfig{MaxLineSize: defaultMaxLineSize},
+			Telemetry: config.TelemetryConfig{
+				Enabled: true,
+				CanonicalEnv: config.TelemetryCanonicalEnvConfig{
+					Version: "2.1.99",
+				},
+			},
+		},
+		httpUpstream:     upstream,
+		rateLimitService: &RateLimitService{},
+	}
+
+	account := &Account{
+		ID:          303,
+		Name:        "claude-code-strict-pass",
+		Platform:    PlatformAnthropic,
+		Type:        AccountTypeAPIKey,
+		Concurrency: 1,
+		Credentials: map[string]any{
+			"api_key":  "upstream-key",
+			"base_url": "https://api.anthropic.com",
+		},
+		Extra:       map[string]any{"anthropic_passthrough": true},
+		Status:      StatusActive,
+		Schedulable: true,
+	}
+
+	err := svc.ForwardCountTokens(context.Background(), c, account, parsed)
+	require.NoError(t, err)
+	require.JSONEq(t, string(body), string(upstream.lastBody))
 }
 
 // TestGatewayService_AnthropicAPIKeyPassthrough_EmptyModelSkipsMapping
@@ -533,44 +606,38 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_EmptyModelSkipsMapping(t *tes
 	require.Equal(t, body, upstream.lastBody, "空模型名时请求体不应被修改")
 }
 
-func TestGatewayService_AnthropicAPIKeyPassthrough_CountTokens404PassthroughNotError(t *testing.T) {
+func TestGatewayService_AnthropicAPIKeyPassthrough_CountTokensErrorResponsePassthrough(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
-		name            string
-		statusCode      int
-		respBody        string
-		wantPassthrough bool
+		name       string
+		statusCode int
+		respBody   string
 	}{
 		{
-			name:            "404 endpoint not found passes through as 404",
-			statusCode:      http.StatusNotFound,
-			respBody:        `{"error":{"message":"Not found: /v1/messages/count_tokens","type":"not_found_error"}}`,
-			wantPassthrough: true,
+			name:       "404 endpoint not found",
+			statusCode: http.StatusNotFound,
+			respBody:   `{"error":{"message":"Not found: /v1/messages/count_tokens","type":"not_found_error"}}`,
 		},
 		{
-			name:            "404 generic not found does not passthrough",
-			statusCode:      http.StatusNotFound,
-			respBody:        `{"error":{"message":"resource not found","type":"not_found_error"}}`,
-			wantPassthrough: false,
+			name:       "404 generic not found",
+			statusCode: http.StatusNotFound,
+			respBody:   `{"error":{"message":"resource not found","type":"not_found_error"}}`,
 		},
 		{
-			name:            "400 Invalid URL does not passthrough",
-			statusCode:      http.StatusBadRequest,
-			respBody:        `{"error":{"message":"Invalid URL (POST /v1/messages/count_tokens)","type":"invalid_request_error"}}`,
-			wantPassthrough: false,
+			name:       "400 invalid URL",
+			statusCode: http.StatusBadRequest,
+			respBody:   `{"error":{"message":"Invalid URL (POST /v1/messages/count_tokens)","type":"invalid_request_error"}}`,
 		},
 		{
-			name:            "400 model error does not passthrough",
-			statusCode:      http.StatusBadRequest,
-			respBody:        `{"error":{"message":"model not found: claude-unknown","type":"invalid_request_error"}}`,
-			wantPassthrough: false,
+			name:       "400 model error",
+			statusCode: http.StatusBadRequest,
+			respBody:   `{"error":{"message":"model not found: claude-unknown","type":"invalid_request_error"}}`,
 		},
 		{
-			name:            "500 internal error does not passthrough",
-			statusCode:      http.StatusInternalServerError,
-			respBody:        `{"error":{"message":"internal error","type":"api_error"}}`,
-			wantPassthrough: false,
+			name:       "500 internal error",
+			statusCode: http.StatusInternalServerError,
+			respBody:   `{"error":{"message":"internal error","type":"api_error"}}`,
 		},
 	}
 
@@ -615,21 +682,9 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_CountTokens404PassthroughNotE
 			}
 
 			err := svc.ForwardCountTokens(context.Background(), c, account, parsed)
-
-			if tt.wantPassthrough {
-				// 返回 nil（不记录为错误），HTTP 状态码 404 + Anthropic 错误体
-				require.NoError(t, err)
-				require.Equal(t, http.StatusNotFound, rec.Code)
-				var errResp map[string]any
-				require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &errResp))
-				require.Equal(t, "error", errResp["type"])
-				errObj, ok := errResp["error"].(map[string]any)
-				require.True(t, ok)
-				require.Equal(t, "not_found_error", errObj["type"])
-			} else {
-				require.Error(t, err)
-				require.Equal(t, tt.statusCode, rec.Code)
-			}
+			require.Error(t, err)
+			require.Equal(t, tt.statusCode, rec.Code)
+			require.JSONEq(t, tt.respBody, rec.Body.String())
 		})
 	}
 }

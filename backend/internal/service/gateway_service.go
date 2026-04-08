@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	mathrand "math/rand"
 	"net/http"
 	"net/url"
@@ -158,6 +159,45 @@ func IsForceCacheBilling(ctx context.Context) bool {
 // WithForceCacheBilling 返回带有强制缓存计费标记的上下文
 func WithForceCacheBilling(ctx context.Context) context.Context {
 	return context.WithValue(ctx, ForceCacheBillingContextKey, true)
+}
+
+// applyForceCacheBillingWithRatio 应用强制缓存计费，支持按客户端可见缓存比例进行上限控制。
+// 当 ratio > 0 且 < 1 时，仅将 input_tokens 按比例转为 cache_read（保留至少 1 个 input_token），
+// 其中缓存占比口径为：(cache_read + cache_creation) / (input + cache_read + cache_creation)。
+// 当 ratio 为 0 或 >= 1 时，回退到原始行为（全部转为 cache_read）。
+func applyForceCacheBillingWithRatio(usage *ClaudeUsage, ratio float64, accountID int64) {
+	if ratio > 0 && ratio < 1 {
+		totalPrompt := usage.InputTokens + usage.CacheReadInputTokens + usage.CacheCreationInputTokens
+		targetCacheTotal := int(math.Round(float64(totalPrompt) * ratio))
+		existingCachedTotal := usage.CacheReadInputTokens + usage.CacheCreationInputTokens
+
+		if existingCachedTotal >= targetCacheTotal {
+			// 已有缓存已达到或超过目标，无需转换
+			logger.LegacyPrintf("service.gateway", "force_cache_billing: skipped, existing cached_total=%d >= target=%d (ratio=%.2f, account=%d)",
+				existingCachedTotal, targetCacheTotal, ratio, accountID)
+			return
+		}
+
+		additional := targetCacheTotal - existingCachedTotal
+		if additional > usage.InputTokens {
+			additional = usage.InputTokens
+		}
+		// 保留至少 1 个 input_token
+		if additional >= usage.InputTokens && usage.InputTokens > 1 {
+			additional = usage.InputTokens - 1
+		}
+
+		logger.LegacyPrintf("service.gateway", "force_cache_billing: %d/%d input_tokens → cache_read_input_tokens (ratio=%.2f, account=%d)",
+			additional, usage.InputTokens, ratio, accountID)
+		usage.CacheReadInputTokens += additional
+		usage.InputTokens -= additional
+	} else {
+		// 无比例限制：全部转为 cache_read（原始行为）
+		logger.LegacyPrintf("service.gateway", "force_cache_billing: %d input_tokens → cache_read_input_tokens (account=%d)",
+			usage.InputTokens, accountID)
+		usage.CacheReadInputTokens += usage.InputTokens
+		usage.InputTokens = 0
+	}
 }
 
 func (s *GatewayService) debugModelRoutingEnabled() bool {
@@ -362,6 +402,7 @@ var allowedHeaders = map[string]bool{
 	"x-stainless-helper-method":                 true,
 	"anthropic-dangerous-direct-browser-access": true,
 	"anthropic-version":                         true,
+	"x-anthropic-billing-header":                true,
 	"x-app":                                     true,
 	"anthropic-beta":                            true,
 	"accept-language":                           true,
@@ -883,12 +924,15 @@ type claudeOAuthNormalizeOptions struct {
 	injectMetadata          bool
 	metadataUserID          string
 	stripSystemCacheControl bool
+	telemetryCfg            *config.TelemetryConfig
 }
 
-// sanitizeSystemText rewrites only the fixed OpenCode identity sentence (if present).
-// We intentionally avoid broad keyword replacement in system prompts to prevent
-// accidentally changing user-provided instructions.
-func sanitizeSystemText(text string) string {
+// sanitizeSystemText rewrites the fixed OpenCode identity sentence (if present),
+// and optionally applies enhanced privacy sanitization when telemetry config is enabled:
+// - Rewrites <env> block (Platform, Shell, OS Version, Working directory)
+// - Scrubs home directory paths (/Users/xxx/, /home/xxx/)
+// - Rewrites cc_version billing fingerprint
+func sanitizeSystemText(text string, telemetryCfg *config.TelemetryConfig) string {
 	if text == "" {
 		return text
 	}
@@ -900,6 +944,16 @@ func sanitizeSystemText(text string) string {
 		"You are OpenCode, the best coding agent on the planet.",
 		strings.TrimSpace(claudeCodeSystemPrompt),
 	)
+
+	// Enhanced privacy sanitization (gated by telemetry config)
+	if telemetryCfg != nil && telemetryCfg.Enabled {
+		text = rewritePromptEnvBlock(text, telemetryCfg.PromptEnv)
+		text = scrubHomePaths(text, telemetryCfg.PromptEnv.WorkingDir)
+		if telemetryCfg.CanonicalEnv.Version != "" {
+			text = rewriteCCVersion(text, telemetryCfg.CanonicalEnv.Version)
+		}
+	}
+
 	return text
 }
 
@@ -965,7 +1019,23 @@ func deleteJSONPathBytes(body []byte, path string) ([]byte, bool) {
 	return next, true
 }
 
-func normalizeClaudeOAuthSystemBody(body []byte, opts claudeOAuthNormalizeOptions) ([]byte, bool) {
+func sanitizeClaudeRequestTextBody(body []byte, opts claudeOAuthNormalizeOptions) ([]byte, bool) {
+	out := body
+	modified := false
+
+	if next, changed := sanitizeClaudeRequestSystemBody(out, opts); changed {
+		out = next
+		modified = true
+	}
+	if next, changed := sanitizeClaudeRequestMessagesBody(out, opts.telemetryCfg); changed {
+		out = next
+		modified = true
+	}
+
+	return out, modified
+}
+
+func sanitizeClaudeRequestSystemBody(body []byte, opts claudeOAuthNormalizeOptions) ([]byte, bool) {
 	sys := gjson.GetBytes(body, "system")
 	if !sys.Exists() {
 		return body, false
@@ -976,7 +1046,7 @@ func normalizeClaudeOAuthSystemBody(body []byte, opts claudeOAuthNormalizeOption
 
 	switch {
 	case sys.Type == gjson.String:
-		sanitized := sanitizeSystemText(sys.String())
+		sanitized := sanitizeSystemText(sys.String(), opts.telemetryCfg)
 		if sanitized != sys.String() {
 			if next, ok := setJSONValueBytes(out, "system", sanitized); ok {
 				out = next
@@ -990,7 +1060,7 @@ func normalizeClaudeOAuthSystemBody(body []byte, opts claudeOAuthNormalizeOption
 				textResult := item.Get("text")
 				if textResult.Exists() && textResult.Type == gjson.String {
 					text := textResult.String()
-					sanitized := sanitizeSystemText(text)
+					sanitized := sanitizeSystemText(text, opts.telemetryCfg)
 					if sanitized != text {
 						if next, ok := setJSONValueBytes(out, fmt.Sprintf("system.%d.text", index), sanitized); ok {
 							out = next
@@ -1011,6 +1081,56 @@ func normalizeClaudeOAuthSystemBody(body []byte, opts claudeOAuthNormalizeOption
 			return true
 		})
 	}
+
+	return out, modified
+}
+
+func sanitizeClaudeRequestMessagesBody(body []byte, telemetryCfg *config.TelemetryConfig) ([]byte, bool) {
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.Exists() || !messages.IsArray() {
+		return body, false
+	}
+
+	out := body
+	modified := false
+	messageIndex := 0
+
+	messages.ForEach(func(_, message gjson.Result) bool {
+		content := message.Get("content")
+		basePath := fmt.Sprintf("messages.%d.content", messageIndex)
+
+		switch {
+		case content.Type == gjson.String:
+			text := content.String()
+			sanitized := sanitizeSystemText(text, telemetryCfg)
+			if sanitized != text {
+				if next, ok := setJSONValueBytes(out, basePath, sanitized); ok {
+					out = next
+					modified = true
+				}
+			}
+		case content.IsArray():
+			blockIndex := 0
+			content.ForEach(func(_, block gjson.Result) bool {
+				textResult := block.Get("text")
+				if textResult.Exists() && textResult.Type == gjson.String {
+					text := textResult.String()
+					sanitized := sanitizeSystemText(text, telemetryCfg)
+					if sanitized != text {
+						if next, ok := setJSONValueBytes(out, fmt.Sprintf("%s.%d.text", basePath, blockIndex), sanitized); ok {
+							out = next
+							modified = true
+						}
+					}
+				}
+				blockIndex++
+				return true
+			})
+		}
+
+		messageIndex++
+		return true
+	})
 
 	return out, modified
 }
@@ -1053,7 +1173,7 @@ func normalizeClaudeOAuthRequestBody(body []byte, modelID string, opts claudeOAu
 	out := body
 	modified := false
 
-	if next, changed := normalizeClaudeOAuthSystemBody(out, opts); changed {
+	if next, changed := sanitizeClaudeRequestTextBody(out, opts); changed {
 		out = next
 		modified = true
 	}
@@ -4065,16 +4185,12 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		return nil, fmt.Errorf("parse request: empty request")
 	}
 
+	sanitizeOpts := claudeOAuthNormalizeOptions{telemetryCfg: &s.cfg.Telemetry}
+	isClaudeCode := isClaudeCodeRequest(ctx, c, parsed)
+
 	if account != nil && account.IsAnthropicAPIKeyPassthroughEnabled() {
 		passthroughBody := parsed.Body
 		passthroughModel := parsed.Model
-		if passthroughModel != "" {
-			if mappedModel := account.GetMappedModel(passthroughModel); mappedModel != passthroughModel {
-				passthroughBody = s.replaceModelInBody(passthroughBody, mappedModel)
-				logger.LegacyPrintf("service.gateway", "Passthrough model mapping: %s -> %s (account: %s)", parsed.Model, mappedModel, account.Name)
-				passthroughModel = mappedModel
-			}
-		}
 		return s.forwardAnthropicAPIKeyPassthroughWithInput(ctx, c, account, anthropicPassthroughForwardInput{
 			Body:          passthroughBody,
 			RequestModel:  passthroughModel,
@@ -4117,7 +4233,6 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		})
 	}
 
-	isClaudeCode := isClaudeCodeRequest(ctx, c, parsed)
 	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCode
 
 	if shouldMimicClaudeCode {
@@ -4128,7 +4243,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			body = injectClaudeCodePrompt(body, parsed.System)
 		}
 
-		normalizeOpts := claudeOAuthNormalizeOptions{stripSystemCacheControl: true}
+		normalizeOpts := claudeOAuthNormalizeOptions{stripSystemCacheControl: true, telemetryCfg: &s.cfg.Telemetry}
 		if s.identityService != nil {
 			fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, c.Request.Header)
 			if err == nil && fp != nil {
@@ -4144,6 +4259,10 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 		}
 
 		body, reqModel = normalizeClaudeOAuthRequestBody(body, reqModel, normalizeOpts)
+	} else if isClaudeCode {
+		if next, changed := sanitizeClaudeRequestTextBody(body, sanitizeOpts); changed {
+			body = next
+		}
 	}
 
 	// 强制执行 cache_control 块数量限制（最多 4 个）
@@ -4687,171 +4806,50 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	if c != nil {
 		c.Set("anthropic_passthrough", true)
 	}
-	// Pre-filter: strip empty text blocks (including nested in tool_result) to prevent upstream 400.
-	input.Body = StripEmptyTextBlocks(input.Body)
+	// 完全透传：除上游认证头外，请求体与请求头均保持原样，不做任何修改。
 
 	// 重试间复用同一请求体，避免每次 string(body) 产生额外分配。
 	setOpsUpstreamRequestBody(c, input.Body)
+	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, input.RequestStream)
+	upstreamReq, err := s.buildUpstreamRequestAnthropicAPIKeyPassthrough(upstreamCtx, c, account, input.Body, token)
+	releaseUpstreamCtx()
+	if err != nil {
+		return nil, err
+	}
 
-	var resp *http.Response
-	retryStart := time.Now()
-	for attempt := 1; attempt <= maxRetryAttempts; attempt++ {
-		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, input.RequestStream)
-		upstreamReq, err := s.buildUpstreamRequestAnthropicAPIKeyPassthrough(upstreamCtx, c, account, input.Body, token)
-		releaseUpstreamCtx()
-		if err != nil {
-			return nil, err
+	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
 		}
-
-		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
-		if err != nil {
-			if resp != nil && resp.Body != nil {
-				_ = resp.Body.Close()
-			}
-			safeErr := sanitizeUpstreamErrorMessage(err.Error())
-			setOpsUpstreamError(c, 0, safeErr, "")
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-				Platform:           account.Platform,
-				AccountID:          account.ID,
-				AccountName:        account.Name,
-				UpstreamStatusCode: 0,
-				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
-				Passthrough:        true,
-				Kind:               "request_error",
-				Message:            safeErr,
-			})
-			c.JSON(http.StatusBadGateway, gin.H{
-				"type": "error",
-				"error": gin.H{
-					"type":    "upstream_error",
-					"message": "Upstream request failed",
-				},
-			})
-			return nil, fmt.Errorf("upstream request failed: %s", safeErr)
-		}
-
-		// 透传分支禁止 400 请求体降级重试（该重试会改写请求体）
-		if resp.StatusCode >= 400 && resp.StatusCode != 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
-			if attempt < maxRetryAttempts {
-				elapsed := time.Since(retryStart)
-				if elapsed >= maxRetryElapsed {
-					break
-				}
-
-				delay := retryBackoffDelay(attempt)
-				remaining := maxRetryElapsed - elapsed
-				if delay > remaining {
-					delay = remaining
-				}
-				if delay <= 0 {
-					break
-				}
-
-				respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-				_ = resp.Body.Close()
-				appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-					Platform:           account.Platform,
-					AccountID:          account.ID,
-					AccountName:        account.Name,
-					UpstreamStatusCode: resp.StatusCode,
-					UpstreamRequestID:  resp.Header.Get("x-request-id"),
-					UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
-					Passthrough:        true,
-					Kind:               "retry",
-					Message:            extractUpstreamErrorMessage(respBody),
-					Detail: func() string {
-						if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-							return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
-						}
-						return ""
-					}(),
-				})
-				logger.LegacyPrintf("service.gateway", "Anthropic passthrough account %d: upstream error %d, retry %d/%d after %v (elapsed=%v/%v)",
-					account.ID, resp.StatusCode, attempt, maxRetryAttempts, delay, elapsed, maxRetryElapsed)
-				if err := sleepWithContext(ctx, delay); err != nil {
-					return nil, err
-				}
-				continue
-			}
-			break
-		}
-
-		break
+		safeErr := sanitizeUpstreamErrorMessage(err.Error())
+		setOpsUpstreamError(c, 0, safeErr, "")
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform:           account.Platform,
+			AccountID:          account.ID,
+			AccountName:        account.Name,
+			UpstreamStatusCode: 0,
+			UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
+			Passthrough:        true,
+			Kind:               "request_error",
+			Message:            safeErr,
+		})
+		c.JSON(http.StatusBadGateway, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "upstream_error",
+				"message": "Upstream request failed",
+			},
+		})
+		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
 	}
 	if resp == nil || resp.Body == nil {
 		return nil, errors.New("upstream request failed: empty response")
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode >= 400 && s.shouldRetryUpstreamError(account, resp.StatusCode) {
-		if s.shouldFailoverUpstreamError(resp.StatusCode) {
-			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-			_ = resp.Body.Close()
-			resp.Body = io.NopCloser(bytes.NewReader(respBody))
-
-			logger.LegacyPrintf("service.gateway", "[Anthropic Passthrough] Upstream error (retry exhausted, failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
-				account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
-
-			s.handleRetryExhaustedSideEffects(ctx, resp, account)
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-				Platform:           account.Platform,
-				AccountID:          account.ID,
-				AccountName:        account.Name,
-				UpstreamStatusCode: resp.StatusCode,
-				UpstreamRequestID:  resp.Header.Get("x-request-id"),
-				Passthrough:        true,
-				Kind:               "retry_exhausted_failover",
-				Message:            extractUpstreamErrorMessage(respBody),
-				Detail: func() string {
-					if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-						return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
-					}
-					return ""
-				}(),
-			})
-			return nil, &UpstreamFailoverError{
-				StatusCode:             resp.StatusCode,
-				ResponseBody:           respBody,
-				RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
-			}
-		}
-		return s.handleRetryExhaustedError(ctx, resp, c, account)
-	}
-
-	if resp.StatusCode >= 400 && s.shouldFailoverUpstreamError(resp.StatusCode) {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
-		_ = resp.Body.Close()
-		resp.Body = io.NopCloser(bytes.NewReader(respBody))
-
-		logger.LegacyPrintf("service.gateway", "[Anthropic Passthrough] Upstream error (failover): Account=%d(%s) Status=%d RequestID=%s Body=%s",
-			account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
-
-		s.handleFailoverSideEffects(ctx, resp, account)
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-			Platform:           account.Platform,
-			AccountID:          account.ID,
-			AccountName:        account.Name,
-			UpstreamStatusCode: resp.StatusCode,
-			UpstreamRequestID:  resp.Header.Get("x-request-id"),
-			Passthrough:        true,
-			Kind:               "failover",
-			Message:            extractUpstreamErrorMessage(respBody),
-			Detail: func() string {
-				if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
-					return truncateString(string(respBody), s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes)
-				}
-				return ""
-			}(),
-		})
-		return nil, &UpstreamFailoverError{
-			StatusCode:             resp.StatusCode,
-			ResponseBody:           respBody,
-			RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
-		}
-	}
-
 	if resp.StatusCode >= 400 {
-		return s.handleErrorResponse(ctx, resp, c, account)
+		return nil, s.writeAnthropicPassthroughErrorResponse(ctx, c, account, resp)
 	}
 
 	var usage *ClaudeUsage
@@ -4894,14 +4892,14 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	body []byte,
 	token string,
 ) (*http.Request, error) {
-	targetURL := claudeAPIURL
+	targetURL := "https://api.anthropic.com/v1/messages"
 	baseURL := account.GetBaseURL()
 	if baseURL != "" {
 		validatedURL, err := s.validateUpstreamBaseURL(baseURL)
 		if err != nil {
 			return nil, err
 		}
-		targetURL = validatedURL + "/v1/messages?beta=true"
+		targetURL = validatedURL + "/v1/messages"
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
@@ -4910,31 +4908,12 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	}
 
 	if c != nil && c.Request != nil {
-		for key, values := range c.Request.Header {
-			lowerKey := strings.ToLower(strings.TrimSpace(key))
-			if !allowedHeaders[lowerKey] {
-				continue
-			}
-			wireKey := resolveWireCasing(key)
-			for _, v := range values {
-				addHeaderRaw(req.Header, wireKey, v)
-			}
-		}
+		copyAnthropicPassthroughRequestHeaders(req.Header, c.Request.Header)
 	}
 
-	// 覆盖入站鉴权残留，并注入上游认证
-	req.Header.Del("authorization")
+	// 完全透传：仅替换认证头 x-api-key，其它请求头原样保留
 	req.Header.Del("x-api-key")
-	req.Header.Del("x-goog-api-key")
-	req.Header.Del("cookie")
 	setHeaderRaw(req.Header, "x-api-key", token)
-
-	if getHeaderRaw(req.Header, "content-type") == "" {
-		setHeaderRaw(req.Header, "content-type", "application/json")
-	}
-	if getHeaderRaw(req.Header, "anthropic-version") == "" {
-		setHeaderRaw(req.Header, "anthropic-version", "2023-06-01")
-	}
 
 	return req, nil
 }
@@ -4952,22 +4931,6 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 	}
 
 	writeAnthropicPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
-
-	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
-	if contentType == "" {
-		contentType = "text/event-stream"
-	}
-	c.Header("Content-Type", contentType)
-	if c.Writer.Header().Get("Cache-Control") == "" {
-		c.Header("Cache-Control", "no-cache")
-	}
-	if c.Writer.Header().Get("Connection") == "" {
-		c.Header("Connection", "keep-alive")
-	}
-	c.Header("X-Accel-Buffering", "no")
-	if v := resp.Header.Get("x-request-id"); v != "" {
-		c.Header("x-request-id", v)
-	}
 
 	w := c.Writer
 	flusher, ok := w.(http.Flusher)
@@ -5267,20 +5230,97 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 	return usage, nil
 }
 
-func writeAnthropicPassthroughResponseHeaders(dst http.Header, src http.Header, filter *responseheaders.CompiledHeaderFilter) {
+func writeAnthropicPassthroughResponseHeaders(dst http.Header, src http.Header, _ *responseheaders.CompiledHeaderFilter) {
 	if dst == nil || src == nil {
 		return
 	}
-	if filter != nil {
-		responseheaders.WriteFilteredHeaders(dst, src, filter)
+	// 完全透传：上游响应头原样回写，不做任何过滤。
+	for key, values := range src {
+		for _, value := range values {
+			dst.Add(key, value)
+		}
+	}
+}
+
+func copyAnthropicPassthroughRequestHeaders(dst http.Header, src http.Header) {
+	if dst == nil || src == nil {
 		return
 	}
-	if v := strings.TrimSpace(src.Get("Content-Type")); v != "" {
-		dst.Set("Content-Type", v)
+	for key, values := range src {
+		wireKey := resolveWireCasing(key)
+		for _, value := range values {
+			addHeaderRaw(dst, wireKey, value)
+		}
 	}
-	if v := strings.TrimSpace(src.Get("x-request-id")); v != "" {
-		dst.Set("x-request-id", v)
+}
+
+func (s *GatewayService) writeAnthropicPassthroughErrorResponse(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	resp *http.Response,
+) error {
+	maxReadBytes := resolveUpstreamResponseReadLimit(s.cfg)
+	respBody, err := readUpstreamResponseBodyLimited(resp.Body, maxReadBytes)
+	if err != nil {
+		if errors.Is(err, ErrUpstreamResponseBodyTooLarge) {
+			setOpsUpstreamError(c, http.StatusBadGateway, "upstream response too large", "")
+			c.JSON(http.StatusBadGateway, gin.H{
+				"type": "error",
+				"error": gin.H{
+					"type":    "upstream_error",
+					"message": "Upstream response too large",
+				},
+			})
+			return err
+		}
+		c.JSON(http.StatusBadGateway, gin.H{
+			"type": "error",
+			"error": gin.H{
+				"type":    "upstream_error",
+				"message": "Failed to read upstream response",
+			},
+		})
+		return err
 	}
+
+	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+	upstreamDetail := ""
+	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+		maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
+		if maxBytes <= 0 {
+			maxBytes = 2048
+		}
+		upstreamDetail = truncateString(string(respBody), maxBytes)
+	}
+	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		Platform:           account.Platform,
+		AccountID:          account.ID,
+		AccountName:        account.Name,
+		UpstreamStatusCode: resp.StatusCode,
+		UpstreamRequestID:  resp.Header.Get("x-request-id"),
+		Passthrough:        true,
+		Kind:               "http_error",
+		Message:            upstreamMsg,
+		Detail:             upstreamDetail,
+	})
+	if s.rateLimitService != nil {
+		s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+	}
+
+	writeAnthropicPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	c.Data(resp.StatusCode, contentType, respBody)
+
+	if upstreamMsg == "" {
+		return fmt.Errorf("upstream error: %d", resp.StatusCode)
+	}
+	return fmt.Errorf("upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
 }
 
 // forwardBedrock 转发请求到 AWS Bedrock
@@ -5734,6 +5774,14 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 	// OAuth账号：应用缓存的指纹到请求头（覆盖白名单透传的头）
 	if fingerprint != nil {
 		s.identityService.ApplyFingerprint(req, fingerprint)
+	}
+	if s.cfg != nil {
+		if billingHeader := getHeaderRaw(req.Header, "x-anthropic-billing-header"); billingHeader != "" {
+			rewritten := RewriteBillingHeaderValue(billingHeader, s.cfg.Telemetry.CanonicalEnv.Version)
+			if rewritten != billingHeader {
+				setHeaderRaw(req.Header, resolveWireCasing("x-anthropic-billing-header"), rewritten)
+			}
+		}
 	}
 
 	// 确保必要的headers存在（保持原始大小写）
@@ -7373,6 +7421,7 @@ type RecordUsageInput struct {
 	IPAddress          string             // 请求的客户端 IP 地址
 	RequestPayloadHash string             // 请求体语义哈希，用于降低 request_id 误复用时的静默误去重风险
 	ForceCacheBilling  bool               // 强制缓存计费：将 input_tokens 转为 cache_read 计费（用于粘性会话切换）
+	SimulateCacheRatio float64            // 模拟缓存比例（0-1），用于 ForceCacheBilling 时限制缓存转换上限
 	APIKeyService      APIKeyQuotaUpdater // 可选：用于更新API Key配额
 }
 
@@ -7668,11 +7717,9 @@ func (s *GatewayService) RecordUsage(ctx context.Context, input *RecordUsageInpu
 
 	// 强制缓存计费：将 input_tokens 转为 cache_read_input_tokens
 	// 用于粘性会话切换时的特殊计费处理
+	// 当配置了模拟缓存比例时，以该比例为上限，避免整体缓存率远超设定值
 	if input.ForceCacheBilling && result.Usage.InputTokens > 0 {
-		logger.LegacyPrintf("service.gateway", "force_cache_billing: %d input_tokens → cache_read_input_tokens (account=%d)",
-			result.Usage.InputTokens, account.ID)
-		result.Usage.CacheReadInputTokens += result.Usage.InputTokens
-		result.Usage.InputTokens = 0
+		applyForceCacheBillingWithRatio(&result.Usage, input.SimulateCacheRatio, account.ID)
 	}
 
 	// Cache TTL Override: 确保计费时 token 分类与账号设置一致
@@ -7860,6 +7907,7 @@ type RecordUsageLongContextInput struct {
 	LongContextThreshold  int                // 长上下文阈值（如 200000）
 	LongContextMultiplier float64            // 超出阈值部分的倍率（如 2.0）
 	ForceCacheBilling     bool               // 强制缓存计费：将 input_tokens 转为 cache_read 计费（用于粘性会话切换）
+	SimulateCacheRatio    float64            // 模拟缓存比例（0-1），用于 ForceCacheBilling 时限制缓存转换上限
 	APIKeyService         APIKeyQuotaUpdater // API Key 配额服务（可选）
 }
 
@@ -7873,11 +7921,9 @@ func (s *GatewayService) RecordUsageWithLongContext(ctx context.Context, input *
 
 	// 强制缓存计费：将 input_tokens 转为 cache_read_input_tokens
 	// 用于粘性会话切换时的特殊计费处理
+	// 当配置了模拟缓存比例时，以该比例为上限，避免整体缓存率远超设定值
 	if input.ForceCacheBilling && result.Usage.InputTokens > 0 {
-		logger.LegacyPrintf("service.gateway", "force_cache_billing: %d input_tokens → cache_read_input_tokens (account=%d)",
-			result.Usage.InputTokens, account.ID)
-		result.Usage.CacheReadInputTokens += result.Usage.InputTokens
-		result.Usage.InputTokens = 0
+		applyForceCacheBillingWithRatio(&result.Usage, input.SimulateCacheRatio, account.ID)
 	}
 
 	// Cache TTL Override: 确保计费时 token 分类与账号设置一致
@@ -8036,14 +8082,11 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 		return fmt.Errorf("parse request: empty request")
 	}
 
+	sanitizeOpts := claudeOAuthNormalizeOptions{telemetryCfg: &s.cfg.Telemetry}
+	isClaudeCode := isClaudeCodeRequest(ctx, c, parsed)
+
 	if account != nil && account.IsAnthropicAPIKeyPassthroughEnabled() {
 		passthroughBody := parsed.Body
-		if reqModel := parsed.Model; reqModel != "" {
-			if mappedModel := account.GetMappedModel(reqModel); mappedModel != reqModel {
-				passthroughBody = s.replaceModelInBody(passthroughBody, mappedModel)
-				logger.LegacyPrintf("service.gateway", "CountTokens passthrough model mapping: %s -> %s (account: %s)", reqModel, mappedModel, account.Name)
-			}
-		}
 		return s.forwardCountTokensAnthropicAPIKeyPassthrough(ctx, c, account, passthroughBody)
 	}
 
@@ -8059,12 +8102,15 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	// Pre-filter: strip empty text blocks to prevent upstream 400.
 	body = StripEmptyTextBlocks(body)
 
-	isClaudeCode := isClaudeCodeRequest(ctx, c, parsed)
 	shouldMimicClaudeCode := account.IsOAuth() && !isClaudeCode
 
 	if shouldMimicClaudeCode {
-		normalizeOpts := claudeOAuthNormalizeOptions{stripSystemCacheControl: true}
+		normalizeOpts := claudeOAuthNormalizeOptions{stripSystemCacheControl: true, telemetryCfg: &s.cfg.Telemetry}
 		body, reqModel = normalizeClaudeOAuthRequestBody(body, reqModel, normalizeOpts)
+	} else if isClaudeCode {
+		if next, changed := sanitizeClaudeRequestTextBody(body, sanitizeOpts); changed {
+			body = next
+		}
 	}
 
 	// Antigravity 账户不支持 count_tokens，返回 404 让客户端 fallback 到本地估算。
@@ -8278,17 +8324,6 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
 		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
 
-		// 中转站不支持 count_tokens 端点时（404），返回 404 让客户端 fallback 到本地估算。
-		// 仅在错误消息明确指向 count_tokens endpoint 不存在时生效，避免误吞其他 404（如错误 base_url）。
-		// 返回 nil 避免 handler 层记录为错误，也不设置 ops 上游错误上下文。
-		if isCountTokensUnsupported404(resp.StatusCode, respBody) {
-			logger.LegacyPrintf("service.gateway",
-				"[count_tokens] Upstream does not support count_tokens (404), returning 404: account=%d name=%s msg=%s",
-				account.ID, account.Name, truncateString(upstreamMsg, 512))
-			s.countTokensError(c, http.StatusNotFound, "not_found_error", "count_tokens endpoint is not supported by upstream")
-			return nil
-		}
-
 		upstreamDetail := ""
 		if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
 			maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
@@ -8311,14 +8346,12 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 			Detail:             upstreamDetail,
 		})
 
-		errMsg := "Upstream request failed"
-		switch resp.StatusCode {
-		case 429:
-			errMsg = "Rate limit exceeded"
-		case 529:
-			errMsg = "Service overloaded"
+		writeAnthropicPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+		contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+		if contentType == "" {
+			contentType = "application/json"
 		}
-		s.countTokensError(c, resp.StatusCode, "upstream_error", errMsg)
+		c.Data(resp.StatusCode, contentType, respBody)
 		if upstreamMsg == "" {
 			return fmt.Errorf("upstream error: %d", resp.StatusCode)
 		}
@@ -8341,14 +8374,14 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	body []byte,
 	token string,
 ) (*http.Request, error) {
-	targetURL := claudeAPICountTokensURL
+	targetURL := "https://api.anthropic.com/v1/messages/count_tokens"
 	baseURL := account.GetBaseURL()
 	if baseURL != "" {
 		validatedURL, err := s.validateUpstreamBaseURL(baseURL)
 		if err != nil {
 			return nil, err
 		}
-		targetURL = validatedURL + "/v1/messages/count_tokens?beta=true"
+		targetURL = validatedURL + "/v1/messages/count_tokens"
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
@@ -8357,30 +8390,12 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	}
 
 	if c != nil && c.Request != nil {
-		for key, values := range c.Request.Header {
-			lowerKey := strings.ToLower(strings.TrimSpace(key))
-			if !allowedHeaders[lowerKey] {
-				continue
-			}
-			wireKey := resolveWireCasing(key)
-			for _, v := range values {
-				addHeaderRaw(req.Header, wireKey, v)
-			}
-		}
+		copyAnthropicPassthroughRequestHeaders(req.Header, c.Request.Header)
 	}
 
-	req.Header.Del("authorization")
+	// 透传模式：仅替换认证头 x-api-key，其它请求头保持原样
 	req.Header.Del("x-api-key")
-	req.Header.Del("x-goog-api-key")
-	req.Header.Del("cookie")
-	req.Header.Set("x-api-key", token)
-
-	if req.Header.Get("content-type") == "" {
-		req.Header.Set("content-type", "application/json")
-	}
-	if req.Header.Get("anthropic-version") == "" {
-		req.Header.Set("anthropic-version", "2023-06-01")
-	}
+	setHeaderRaw(req.Header, "x-api-key", token)
 
 	return req, nil
 }
@@ -8463,6 +8478,14 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	// OAuth 账号：应用指纹到请求头（受设置开关控制）
 	if ctEnableFP && ctFingerprint != nil {
 		s.identityService.ApplyFingerprint(req, ctFingerprint)
+	}
+	if s.cfg != nil {
+		if billingHeader := getHeaderRaw(req.Header, "x-anthropic-billing-header"); billingHeader != "" {
+			rewritten := RewriteBillingHeaderValue(billingHeader, s.cfg.Telemetry.CanonicalEnv.Version)
+			if rewritten != billingHeader {
+				setHeaderRaw(req.Header, resolveWireCasing("x-anthropic-billing-header"), rewritten)
+			}
+		}
 	}
 
 	// 确保必要的 headers 存在（保持原始大小写）
