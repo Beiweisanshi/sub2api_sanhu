@@ -15,6 +15,7 @@ import (
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -1309,6 +1310,31 @@ func TestExtractSSEUsage(t *testing.T) {
 			require.Equal(t, tt.expected, *usage)
 		})
 	}
+}
+
+func TestGetSimulateCacheRatio_OnlyAntigravity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPost, "/antigravity/v1/messages", nil)
+
+	withGroup := func(group *Group) *gin.Context {
+		ccopy := c.Copy()
+		ccopy.Request = req.WithContext(context.WithValue(req.Context(), ctxkey.Group, group))
+		return ccopy
+	}
+
+	require.Equal(t, 0.6, getSimulateCacheRatio(withGroup(&Group{
+		Platform:             PlatformAntigravity,
+		SimulateCacheEnabled: true,
+		SimulateCacheRatio:   0.6,
+	})))
+
+	require.Equal(t, 0.0, getSimulateCacheRatio(withGroup(&Group{
+		Platform:             PlatformAnthropic,
+		SimulateCacheEnabled: true,
+		SimulateCacheRatio:   0.6,
+	})))
 }
 
 // TestAntigravityClientWriter 验证 antigravityClientWriter 的断开检测

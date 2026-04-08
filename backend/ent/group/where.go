@@ -205,6 +205,16 @@ func DefaultMappedModel(v string) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldDefaultMappedModel, v))
 }
 
+// SimulateCacheEnabled applies equality check predicate on the "simulate_cache_enabled" field. It's identical to SimulateCacheEnabledEQ.
+func SimulateCacheEnabled(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldSimulateCacheEnabled, v))
+}
+
+// SimulateCacheRatio applies equality check predicate on the "simulate_cache_ratio" field. It's identical to SimulateCacheRatioEQ.
+func SimulateCacheRatio(v float64) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldSimulateCacheRatio, v))
+}
+
 // CreatedAtEQ applies the EQ predicate on the "created_at" field.
 func CreatedAtEQ(v time.Time) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldCreatedAt, v))
@@ -1553,6 +1563,56 @@ func DefaultMappedModelEqualFold(v string) predicate.Group {
 // DefaultMappedModelContainsFold applies the ContainsFold predicate on the "default_mapped_model" field.
 func DefaultMappedModelContainsFold(v string) predicate.Group {
 	return predicate.Group(sql.FieldContainsFold(FieldDefaultMappedModel, v))
+}
+
+// SimulateCacheEnabledEQ applies the EQ predicate on the "simulate_cache_enabled" field.
+func SimulateCacheEnabledEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldSimulateCacheEnabled, v))
+}
+
+// SimulateCacheEnabledNEQ applies the NEQ predicate on the "simulate_cache_enabled" field.
+func SimulateCacheEnabledNEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldSimulateCacheEnabled, v))
+}
+
+// SimulateCacheRatioEQ applies the EQ predicate on the "simulate_cache_ratio" field.
+func SimulateCacheRatioEQ(v float64) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldSimulateCacheRatio, v))
+}
+
+// SimulateCacheRatioNEQ applies the NEQ predicate on the "simulate_cache_ratio" field.
+func SimulateCacheRatioNEQ(v float64) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldSimulateCacheRatio, v))
+}
+
+// SimulateCacheRatioIn applies the In predicate on the "simulate_cache_ratio" field.
+func SimulateCacheRatioIn(vs ...float64) predicate.Group {
+	return predicate.Group(sql.FieldIn(FieldSimulateCacheRatio, vs...))
+}
+
+// SimulateCacheRatioNotIn applies the NotIn predicate on the "simulate_cache_ratio" field.
+func SimulateCacheRatioNotIn(vs ...float64) predicate.Group {
+	return predicate.Group(sql.FieldNotIn(FieldSimulateCacheRatio, vs...))
+}
+
+// SimulateCacheRatioGT applies the GT predicate on the "simulate_cache_ratio" field.
+func SimulateCacheRatioGT(v float64) predicate.Group {
+	return predicate.Group(sql.FieldGT(FieldSimulateCacheRatio, v))
+}
+
+// SimulateCacheRatioGTE applies the GTE predicate on the "simulate_cache_ratio" field.
+func SimulateCacheRatioGTE(v float64) predicate.Group {
+	return predicate.Group(sql.FieldGTE(FieldSimulateCacheRatio, v))
+}
+
+// SimulateCacheRatioLT applies the LT predicate on the "simulate_cache_ratio" field.
+func SimulateCacheRatioLT(v float64) predicate.Group {
+	return predicate.Group(sql.FieldLT(FieldSimulateCacheRatio, v))
+}
+
+// SimulateCacheRatioLTE applies the LTE predicate on the "simulate_cache_ratio" field.
+func SimulateCacheRatioLTE(v float64) predicate.Group {
+	return predicate.Group(sql.FieldLTE(FieldSimulateCacheRatio, v))
 }
 
 // HasAPIKeys applies the HasEdge predicate on the "api_keys" edge.

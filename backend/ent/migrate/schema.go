@@ -410,6 +410,8 @@ var (
 		{Name: "sort_order", Type: field.TypeInt, Default: 0},
 		{Name: "allow_messages_dispatch", Type: field.TypeBool, Default: false},
 		{Name: "default_mapped_model", Type: field.TypeString, Size: 100, Default: ""},
+		{Name: "simulate_cache_enabled", Type: field.TypeBool, Default: false},
+		{Name: "simulate_cache_ratio", Type: field.TypeFloat64, Default: 0.7, SchemaType: map[string]string{"postgres": "decimal(5,4)"}},
 	}
 	// GroupsTable holds the schema information for the "groups" table.
 	GroupsTable = &schema.Table{

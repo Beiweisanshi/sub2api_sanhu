@@ -79,6 +79,10 @@ const (
 	FieldAllowMessagesDispatch = "allow_messages_dispatch"
 	// FieldDefaultMappedModel holds the string denoting the default_mapped_model field in the database.
 	FieldDefaultMappedModel = "default_mapped_model"
+	// FieldSimulateCacheEnabled holds the string denoting the simulate_cache_enabled field in the database.
+	FieldSimulateCacheEnabled = "simulate_cache_enabled"
+	// FieldSimulateCacheRatio holds the string denoting the simulate_cache_ratio field in the database.
+	FieldSimulateCacheRatio = "simulate_cache_ratio"
 	// EdgeAPIKeys holds the string denoting the api_keys edge name in mutations.
 	EdgeAPIKeys = "api_keys"
 	// EdgeRedeemCodes holds the string denoting the redeem_codes edge name in mutations.
@@ -186,6 +190,8 @@ var Columns = []string{
 	FieldSortOrder,
 	FieldAllowMessagesDispatch,
 	FieldDefaultMappedModel,
+	FieldSimulateCacheEnabled,
+	FieldSimulateCacheRatio,
 }
 
 var (
@@ -259,6 +265,12 @@ var (
 	DefaultDefaultMappedModel string
 	// DefaultMappedModelValidator is a validator for the "default_mapped_model" field. It is called by the builders before save.
 	DefaultMappedModelValidator func(string) error
+	// DefaultSimulateCacheEnabled holds the default value on creation for the "simulate_cache_enabled" field.
+	DefaultSimulateCacheEnabled bool
+	// DefaultSimulateCacheRatio holds the default value on creation for the "simulate_cache_ratio" field.
+	DefaultSimulateCacheRatio float64
+	// SimulateCacheRatioValidator is a validator for the "simulate_cache_ratio" field. It is called by the builders before save.
+	SimulateCacheRatioValidator func(float64) error
 )
 
 // OrderOption defines the ordering options for the Group queries.
@@ -417,6 +429,16 @@ func ByAllowMessagesDispatch(opts ...sql.OrderTermOption) OrderOption {
 // ByDefaultMappedModel orders the results by the default_mapped_model field.
 func ByDefaultMappedModel(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldDefaultMappedModel, opts...).ToFunc()
+}
+
+// BySimulateCacheEnabled orders the results by the simulate_cache_enabled field.
+func BySimulateCacheEnabled(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldSimulateCacheEnabled, opts...).ToFunc()
+}
+
+// BySimulateCacheRatio orders the results by the simulate_cache_ratio field.
+func BySimulateCacheRatio(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldSimulateCacheRatio, opts...).ToFunc()
 }
 
 // ByAPIKeysCount orders the results by api_keys count.

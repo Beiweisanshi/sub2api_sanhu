@@ -157,3 +157,29 @@ func TestGetUpstreamEndpoint_FullFlow(t *testing.T) {
 	got := GetUpstreamEndpoint(c, service.PlatformOpenAI)
 	require.Equal(t, "/v1/responses/compact", got)
 }
+
+func TestGetGroupSimulateCacheRatio(t *testing.T) {
+	t.Run("antigravity enabled returns configured ratio", func(t *testing.T) {
+		apiKey := &service.APIKey{
+			Group: &service.Group{
+				Platform:             service.PlatformAntigravity,
+				SimulateCacheEnabled: true,
+				SimulateCacheRatio:   0.6,
+			},
+		}
+
+		require.Equal(t, 0.6, getGroupSimulateCacheRatio(apiKey))
+	})
+
+	t.Run("non antigravity group is ignored", func(t *testing.T) {
+		apiKey := &service.APIKey{
+			Group: &service.Group{
+				Platform:             service.PlatformAnthropic,
+				SimulateCacheEnabled: true,
+				SimulateCacheRatio:   0.6,
+			},
+		}
+
+		require.Equal(t, 0.0, getGroupSimulateCacheRatio(apiKey))
+	})
+}

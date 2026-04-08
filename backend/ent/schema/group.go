@@ -157,6 +157,17 @@ func (Group) Fields() []ent.Field {
 			MaxLen(100).
 			Default("").
 			Comment("默认映射模型 ID，当账号级映射找不到时使用此值"),
+
+		// 模拟缓存配置（仅 antigravity 平台使用）
+		field.Bool("simulate_cache_enabled").
+			Default(false).
+			Comment("是否启用模拟缓存（将部分 input_tokens 虚拟为 cache_read_input_tokens）"),
+		field.Float("simulate_cache_ratio").
+			SchemaType(map[string]string{dialect.Postgres: "decimal(5,4)"}).
+			Default(0.7).
+			Min(0).
+			Max(1).
+			Comment("模拟缓存比例（0.0-1.0），表示转换为 cache_read 的比例"),
 	}
 }
 

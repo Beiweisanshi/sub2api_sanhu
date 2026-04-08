@@ -61,6 +61,10 @@ type Group struct {
 	AllowMessagesDispatch bool
 	DefaultMappedModel    string
 
+	// 模拟缓存配置（仅 antigravity 平台使用）
+	SimulateCacheEnabled bool
+	SimulateCacheRatio   float64
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
 

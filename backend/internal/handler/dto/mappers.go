@@ -145,6 +145,8 @@ func GroupFromServiceAdmin(g *service.Group) *AdminGroup {
 		ActiveAccountCount:      g.ActiveAccountCount,
 		RateLimitedAccountCount: g.RateLimitedAccountCount,
 		SortOrder:               g.SortOrder,
+		SimulateCacheEnabled:    g.SimulateCacheEnabled,
+		SimulateCacheRatio:      g.SimulateCacheRatio,
 	}
 	if len(g.AccountGroups) > 0 {
 		out.AccountGroups = make([]AccountGroup, 0, len(g.AccountGroups))

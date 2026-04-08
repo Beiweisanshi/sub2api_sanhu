@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/antigravity"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -858,6 +859,25 @@ func getSessionID(c *gin.Context) string {
 		return ""
 	}
 	return c.GetHeader("session_id")
+}
+
+// getSimulateCacheRatio 从 gin.Context 提取模拟缓存比例。
+// 仅对 Antigravity 且分组启用了模拟缓存、比例 > 0 的场景返回有效比例，否则返回 0。
+func getSimulateCacheRatio(c *gin.Context) float64 {
+	if c == nil {
+		return 0
+	}
+	group, ok := c.Request.Context().Value(ctxkey.Group).(*Group)
+	if !ok || group == nil {
+		return 0
+	}
+	if group.Platform != PlatformAntigravity {
+		return 0
+	}
+	if group.SimulateCacheEnabled && group.SimulateCacheRatio > 0 {
+		return group.SimulateCacheRatio
+	}
+	return 0
 }
 
 // logPrefix 生成统一的日志前缀
@@ -3851,7 +3871,8 @@ returnResponse:
 	}
 
 	// 转换 Gemini 响应为 Claude 格式
-	claudeResp, agUsage, err := antigravity.TransformGeminiToClaude(geminiBody, originalModel)
+	simulateCacheRatio := getSimulateCacheRatio(c)
+	claudeResp, agUsage, err := antigravity.TransformGeminiToClaude(geminiBody, originalModel, simulateCacheRatio)
 	if err != nil {
 		logger.LegacyPrintf("service.antigravity_gateway", "[antigravity-Forward] transform_error error=%v body=%s", err, string(geminiBody))
 		return nil, s.writeClaudeError(c, http.StatusBadGateway, "upstream_error", "Failed to parse upstream response")
@@ -3883,7 +3904,8 @@ func (s *AntigravityGatewayService) handleClaudeStreamingResponse(c *gin.Context
 		return nil, errors.New("streaming not supported")
 	}
 
-	processor := antigravity.NewStreamingProcessor(originalModel)
+	simulateCacheRatio := getSimulateCacheRatio(c)
+	processor := antigravity.NewStreamingProcessor(originalModel, simulateCacheRatio)
 	var firstTokenMs *int
 	// 使用 Scanner 并限制单行大小，避免 ReadString 无上限导致 OOM
 	scanner := bufio.NewScanner(resp.Body)

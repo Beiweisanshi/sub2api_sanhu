@@ -11,7 +11,7 @@ import (
 )
 
 // TransformGeminiToClaude 将 Gemini 响应转换为 Claude 格式（非流式）
-func TransformGeminiToClaude(geminiResp []byte, originalModel string) ([]byte, *ClaudeUsage, error) {
+func TransformGeminiToClaude(geminiResp []byte, originalModel string, simulateCacheRatio float64) ([]byte, *ClaudeUsage, error) {
 	// 解包 v1internal 响应
 	var v1Resp V1InternalResponse
 	if err := json.Unmarshal(geminiResp, &v1Resp); err != nil {
@@ -35,7 +35,7 @@ func TransformGeminiToClaude(geminiResp []byte, originalModel string) ([]byte, *
 	}
 
 	// 使用处理器转换
-	processor := NewNonStreamingProcessor()
+	processor := NewNonStreamingProcessor(simulateCacheRatio)
 	claudeResp := processor.Process(&v1Resp.Response, v1Resp.ResponseID, originalModel)
 
 	// 序列化
@@ -49,18 +49,20 @@ func TransformGeminiToClaude(geminiResp []byte, originalModel string) ([]byte, *
 
 // NonStreamingProcessor 非流式响应处理器
 type NonStreamingProcessor struct {
-	contentBlocks     []ClaudeContentItem
-	textBuilder       string
-	thinkingBuilder   string
-	thinkingSignature string
-	trailingSignature string
-	hasToolCall       bool
+	contentBlocks      []ClaudeContentItem
+	textBuilder        string
+	thinkingBuilder    string
+	thinkingSignature  string
+	trailingSignature  string
+	hasToolCall        bool
+	simulateCacheRatio float64
 }
 
 // NewNonStreamingProcessor 创建非流式响应处理器
-func NewNonStreamingProcessor() *NonStreamingProcessor {
+func NewNonStreamingProcessor(simulateCacheRatio float64) *NonStreamingProcessor {
 	return &NonStreamingProcessor{
-		contentBlocks: make([]ClaudeContentItem, 0),
+		contentBlocks:      make([]ClaudeContentItem, 0),
+		simulateCacheRatio: simulateCacheRatio,
 	}
 }
 
@@ -284,6 +286,12 @@ func (p *NonStreamingProcessor) buildResponse(geminiResp *GeminiResponse, respon
 		usage.InputTokens = geminiResp.UsageMetadata.PromptTokenCount - cached
 		usage.OutputTokens = geminiResp.UsageMetadata.CandidatesTokenCount + geminiResp.UsageMetadata.ThoughtsTokenCount
 		usage.CacheReadInputTokens = cached
+	}
+
+	// 应用模拟缓存
+	if p.simulateCacheRatio > 0 {
+		usage.InputTokens, usage.CacheReadInputTokens, usage.CacheCreationInputTokens = applySimulateCache(
+			usage.InputTokens, usage.CacheReadInputTokens, p.simulateCacheRatio)
 	}
 
 	// 生成响应 ID

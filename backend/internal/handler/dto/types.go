@@ -130,6 +130,10 @@ type AdminGroup struct {
 
 	// 分组排序
 	SortOrder int `json:"sort_order"`
+
+	// 模拟缓存配置（仅 antigravity 平台使用）
+	SimulateCacheEnabled bool    `json:"simulate_cache_enabled"`
+	SimulateCacheRatio   float64 `json:"simulate_cache_ratio"`
 }
 
 type Account struct {

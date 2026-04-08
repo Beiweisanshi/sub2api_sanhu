@@ -452,6 +452,34 @@ func (_c *GroupCreate) SetNillableDefaultMappedModel(v *string) *GroupCreate {
 	return _c
 }
 
+// SetSimulateCacheEnabled sets the "simulate_cache_enabled" field.
+func (_c *GroupCreate) SetSimulateCacheEnabled(v bool) *GroupCreate {
+	_c.mutation.SetSimulateCacheEnabled(v)
+	return _c
+}
+
+// SetNillableSimulateCacheEnabled sets the "simulate_cache_enabled" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableSimulateCacheEnabled(v *bool) *GroupCreate {
+	if v != nil {
+		_c.SetSimulateCacheEnabled(*v)
+	}
+	return _c
+}
+
+// SetSimulateCacheRatio sets the "simulate_cache_ratio" field.
+func (_c *GroupCreate) SetSimulateCacheRatio(v float64) *GroupCreate {
+	_c.mutation.SetSimulateCacheRatio(v)
+	return _c
+}
+
+// SetNillableSimulateCacheRatio sets the "simulate_cache_ratio" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableSimulateCacheRatio(v *float64) *GroupCreate {
+	if v != nil {
+		_c.SetSimulateCacheRatio(*v)
+	}
+	return _c
+}
+
 // AddAPIKeyIDs adds the "api_keys" edge to the APIKey entity by IDs.
 func (_c *GroupCreate) AddAPIKeyIDs(ids ...int64) *GroupCreate {
 	_c.mutation.AddAPIKeyIDs(ids...)
@@ -649,6 +677,14 @@ func (_c *GroupCreate) defaults() error {
 		v := group.DefaultDefaultMappedModel
 		_c.mutation.SetDefaultMappedModel(v)
 	}
+	if _, ok := _c.mutation.SimulateCacheEnabled(); !ok {
+		v := group.DefaultSimulateCacheEnabled
+		_c.mutation.SetSimulateCacheEnabled(v)
+	}
+	if _, ok := _c.mutation.SimulateCacheRatio(); !ok {
+		v := group.DefaultSimulateCacheRatio
+		_c.mutation.SetSimulateCacheRatio(v)
+	}
 	return nil
 }
 
@@ -728,6 +764,17 @@ func (_c *GroupCreate) check() error {
 	if v, ok := _c.mutation.DefaultMappedModel(); ok {
 		if err := group.DefaultMappedModelValidator(v); err != nil {
 			return &ValidationError{Name: "default_mapped_model", err: fmt.Errorf(`ent: validator failed for field "Group.default_mapped_model": %w`, err)}
+		}
+	}
+	if _, ok := _c.mutation.SimulateCacheEnabled(); !ok {
+		return &ValidationError{Name: "simulate_cache_enabled", err: errors.New(`ent: missing required field "Group.simulate_cache_enabled"`)}
+	}
+	if _, ok := _c.mutation.SimulateCacheRatio(); !ok {
+		return &ValidationError{Name: "simulate_cache_ratio", err: errors.New(`ent: missing required field "Group.simulate_cache_ratio"`)}
+	}
+	if v, ok := _c.mutation.SimulateCacheRatio(); ok {
+		if err := group.SimulateCacheRatioValidator(v); err != nil {
+			return &ValidationError{Name: "simulate_cache_ratio", err: fmt.Errorf(`ent: validator failed for field "Group.simulate_cache_ratio": %w`, err)}
 		}
 	}
 	return nil
@@ -884,6 +931,14 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.DefaultMappedModel(); ok {
 		_spec.SetField(group.FieldDefaultMappedModel, field.TypeString, value)
 		_node.DefaultMappedModel = value
+	}
+	if value, ok := _c.mutation.SimulateCacheEnabled(); ok {
+		_spec.SetField(group.FieldSimulateCacheEnabled, field.TypeBool, value)
+		_node.SimulateCacheEnabled = value
+	}
+	if value, ok := _c.mutation.SimulateCacheRatio(); ok {
+		_spec.SetField(group.FieldSimulateCacheRatio, field.TypeFloat64, value)
+		_node.SimulateCacheRatio = value
 	}
 	if nodes := _c.mutation.APIKeysIDs(); len(nodes) > 0 {
 		edge := &sqlgraph.EdgeSpec{
@@ -1599,6 +1654,36 @@ func (u *GroupUpsert) UpdateDefaultMappedModel() *GroupUpsert {
 	return u
 }
 
+// SetSimulateCacheEnabled sets the "simulate_cache_enabled" field.
+func (u *GroupUpsert) SetSimulateCacheEnabled(v bool) *GroupUpsert {
+	u.Set(group.FieldSimulateCacheEnabled, v)
+	return u
+}
+
+// UpdateSimulateCacheEnabled sets the "simulate_cache_enabled" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateSimulateCacheEnabled() *GroupUpsert {
+	u.SetExcluded(group.FieldSimulateCacheEnabled)
+	return u
+}
+
+// SetSimulateCacheRatio sets the "simulate_cache_ratio" field.
+func (u *GroupUpsert) SetSimulateCacheRatio(v float64) *GroupUpsert {
+	u.Set(group.FieldSimulateCacheRatio, v)
+	return u
+}
+
+// UpdateSimulateCacheRatio sets the "simulate_cache_ratio" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateSimulateCacheRatio() *GroupUpsert {
+	u.SetExcluded(group.FieldSimulateCacheRatio)
+	return u
+}
+
+// AddSimulateCacheRatio adds v to the "simulate_cache_ratio" field.
+func (u *GroupUpsert) AddSimulateCacheRatio(v float64) *GroupUpsert {
+	u.Add(group.FieldSimulateCacheRatio, v)
+	return u
+}
+
 // UpdateNewValues updates the mutable fields using the new values that were set on create.
 // Using this option is equivalent to using:
 //
@@ -2292,6 +2377,41 @@ func (u *GroupUpsertOne) SetDefaultMappedModel(v string) *GroupUpsertOne {
 func (u *GroupUpsertOne) UpdateDefaultMappedModel() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateDefaultMappedModel()
+	})
+}
+
+// SetSimulateCacheEnabled sets the "simulate_cache_enabled" field.
+func (u *GroupUpsertOne) SetSimulateCacheEnabled(v bool) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetSimulateCacheEnabled(v)
+	})
+}
+
+// UpdateSimulateCacheEnabled sets the "simulate_cache_enabled" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateSimulateCacheEnabled() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateSimulateCacheEnabled()
+	})
+}
+
+// SetSimulateCacheRatio sets the "simulate_cache_ratio" field.
+func (u *GroupUpsertOne) SetSimulateCacheRatio(v float64) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetSimulateCacheRatio(v)
+	})
+}
+
+// AddSimulateCacheRatio adds v to the "simulate_cache_ratio" field.
+func (u *GroupUpsertOne) AddSimulateCacheRatio(v float64) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.AddSimulateCacheRatio(v)
+	})
+}
+
+// UpdateSimulateCacheRatio sets the "simulate_cache_ratio" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateSimulateCacheRatio() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateSimulateCacheRatio()
 	})
 }
 
@@ -3154,6 +3274,41 @@ func (u *GroupUpsertBulk) SetDefaultMappedModel(v string) *GroupUpsertBulk {
 func (u *GroupUpsertBulk) UpdateDefaultMappedModel() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdateDefaultMappedModel()
+	})
+}
+
+// SetSimulateCacheEnabled sets the "simulate_cache_enabled" field.
+func (u *GroupUpsertBulk) SetSimulateCacheEnabled(v bool) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetSimulateCacheEnabled(v)
+	})
+}
+
+// UpdateSimulateCacheEnabled sets the "simulate_cache_enabled" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateSimulateCacheEnabled() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateSimulateCacheEnabled()
+	})
+}
+
+// SetSimulateCacheRatio sets the "simulate_cache_ratio" field.
+func (u *GroupUpsertBulk) SetSimulateCacheRatio(v float64) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetSimulateCacheRatio(v)
+	})
+}
+
+// AddSimulateCacheRatio adds v to the "simulate_cache_ratio" field.
+func (u *GroupUpsertBulk) AddSimulateCacheRatio(v float64) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.AddSimulateCacheRatio(v)
+	})
+}
+
+// UpdateSimulateCacheRatio sets the "simulate_cache_ratio" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateSimulateCacheRatio() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateSimulateCacheRatio()
 	})
 }
 

@@ -8254,6 +8254,9 @@ type GroupMutation struct {
 	addsort_order                           *int
 	allow_messages_dispatch                 *bool
 	default_mapped_model                    *string
+	simulate_cache_enabled                  *bool
+	simulate_cache_ratio                    *float64
+	addsimulate_cache_ratio                 *float64
 	clearedFields                           map[string]struct{}
 	api_keys                                map[int64]struct{}
 	removedapi_keys                         map[int64]struct{}
@@ -10070,6 +10073,98 @@ func (m *GroupMutation) ResetDefaultMappedModel() {
 	m.default_mapped_model = nil
 }
 
+// SetSimulateCacheEnabled sets the "simulate_cache_enabled" field.
+func (m *GroupMutation) SetSimulateCacheEnabled(b bool) {
+	m.simulate_cache_enabled = &b
+}
+
+// SimulateCacheEnabled returns the value of the "simulate_cache_enabled" field in the mutation.
+func (m *GroupMutation) SimulateCacheEnabled() (r bool, exists bool) {
+	v := m.simulate_cache_enabled
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldSimulateCacheEnabled returns the old "simulate_cache_enabled" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldSimulateCacheEnabled(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldSimulateCacheEnabled is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldSimulateCacheEnabled requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldSimulateCacheEnabled: %w", err)
+	}
+	return oldValue.SimulateCacheEnabled, nil
+}
+
+// ResetSimulateCacheEnabled resets all changes to the "simulate_cache_enabled" field.
+func (m *GroupMutation) ResetSimulateCacheEnabled() {
+	m.simulate_cache_enabled = nil
+}
+
+// SetSimulateCacheRatio sets the "simulate_cache_ratio" field.
+func (m *GroupMutation) SetSimulateCacheRatio(f float64) {
+	m.simulate_cache_ratio = &f
+	m.addsimulate_cache_ratio = nil
+}
+
+// SimulateCacheRatio returns the value of the "simulate_cache_ratio" field in the mutation.
+func (m *GroupMutation) SimulateCacheRatio() (r float64, exists bool) {
+	v := m.simulate_cache_ratio
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldSimulateCacheRatio returns the old "simulate_cache_ratio" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldSimulateCacheRatio(ctx context.Context) (v float64, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldSimulateCacheRatio is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldSimulateCacheRatio requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldSimulateCacheRatio: %w", err)
+	}
+	return oldValue.SimulateCacheRatio, nil
+}
+
+// AddSimulateCacheRatio adds f to the "simulate_cache_ratio" field.
+func (m *GroupMutation) AddSimulateCacheRatio(f float64) {
+	if m.addsimulate_cache_ratio != nil {
+		*m.addsimulate_cache_ratio += f
+	} else {
+		m.addsimulate_cache_ratio = &f
+	}
+}
+
+// AddedSimulateCacheRatio returns the value that was added to the "simulate_cache_ratio" field in this mutation.
+func (m *GroupMutation) AddedSimulateCacheRatio() (r float64, exists bool) {
+	v := m.addsimulate_cache_ratio
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// ResetSimulateCacheRatio resets all changes to the "simulate_cache_ratio" field.
+func (m *GroupMutation) ResetSimulateCacheRatio() {
+	m.simulate_cache_ratio = nil
+	m.addsimulate_cache_ratio = nil
+}
+
 // AddAPIKeyIDs adds the "api_keys" edge to the APIKey entity by ids.
 func (m *GroupMutation) AddAPIKeyIDs(ids ...int64) {
 	if m.api_keys == nil {
@@ -10428,7 +10523,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 32)
+	fields := make([]string, 0, 34)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -10525,6 +10620,12 @@ func (m *GroupMutation) Fields() []string {
 	if m.default_mapped_model != nil {
 		fields = append(fields, group.FieldDefaultMappedModel)
 	}
+	if m.simulate_cache_enabled != nil {
+		fields = append(fields, group.FieldSimulateCacheEnabled)
+	}
+	if m.simulate_cache_ratio != nil {
+		fields = append(fields, group.FieldSimulateCacheRatio)
+	}
 	return fields
 }
 
@@ -10597,6 +10698,10 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.AllowMessagesDispatch()
 	case group.FieldDefaultMappedModel:
 		return m.DefaultMappedModel()
+	case group.FieldSimulateCacheEnabled:
+		return m.SimulateCacheEnabled()
+	case group.FieldSimulateCacheRatio:
+		return m.SimulateCacheRatio()
 	}
 	return nil, false
 }
@@ -10670,6 +10775,10 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldAllowMessagesDispatch(ctx)
 	case group.FieldDefaultMappedModel:
 		return m.OldDefaultMappedModel(ctx)
+	case group.FieldSimulateCacheEnabled:
+		return m.OldSimulateCacheEnabled(ctx)
+	case group.FieldSimulateCacheRatio:
+		return m.OldSimulateCacheRatio(ctx)
 	}
 	return nil, fmt.Errorf("unknown Group field %s", name)
 }
@@ -10903,6 +11012,20 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 		}
 		m.SetDefaultMappedModel(v)
 		return nil
+	case group.FieldSimulateCacheEnabled:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetSimulateCacheEnabled(v)
+		return nil
+	case group.FieldSimulateCacheRatio:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetSimulateCacheRatio(v)
+		return nil
 	}
 	return fmt.Errorf("unknown Group field %s", name)
 }
@@ -10959,6 +11082,9 @@ func (m *GroupMutation) AddedFields() []string {
 	if m.addsort_order != nil {
 		fields = append(fields, group.FieldSortOrder)
 	}
+	if m.addsimulate_cache_ratio != nil {
+		fields = append(fields, group.FieldSimulateCacheRatio)
+	}
 	return fields
 }
 
@@ -10999,6 +11125,8 @@ func (m *GroupMutation) AddedField(name string) (ent.Value, bool) {
 		return m.AddedFallbackGroupIDOnInvalidRequest()
 	case group.FieldSortOrder:
 		return m.AddedSortOrder()
+	case group.FieldSimulateCacheRatio:
+		return m.AddedSimulateCacheRatio()
 	}
 	return nil, false
 }
@@ -11119,6 +11247,13 @@ func (m *GroupMutation) AddField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.AddSortOrder(v)
+		return nil
+	case group.FieldSimulateCacheRatio:
+		v, ok := value.(float64)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.AddSimulateCacheRatio(v)
 		return nil
 	}
 	return fmt.Errorf("unknown Group numeric field %s", name)
@@ -11335,6 +11470,12 @@ func (m *GroupMutation) ResetField(name string) error {
 		return nil
 	case group.FieldDefaultMappedModel:
 		m.ResetDefaultMappedModel()
+		return nil
+	case group.FieldSimulateCacheEnabled:
+		m.ResetSimulateCacheEnabled()
+		return nil
+	case group.FieldSimulateCacheRatio:
+		m.ResetSimulateCacheRatio()
 		return nil
 	}
 	return fmt.Errorf("unknown Group field %s", name)

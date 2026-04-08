@@ -113,6 +113,9 @@ type CreateGroupRequest struct {
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
 	AllowMessagesDispatch bool   `json:"allow_messages_dispatch"`
 	DefaultMappedModel    string `json:"default_mapped_model"`
+	// 模拟缓存配置（仅 antigravity 平台使用）
+	SimulateCacheEnabled bool     `json:"simulate_cache_enabled"`
+	SimulateCacheRatio   *float64 `json:"simulate_cache_ratio"`
 	// 从指定分组复制账号（创建后自动绑定）
 	CopyAccountsFromGroupIDs []int64 `json:"copy_accounts_from_group_ids"`
 }
@@ -151,6 +154,9 @@ type UpdateGroupRequest struct {
 	// OpenAI Messages 调度配置（仅 openai 平台使用）
 	AllowMessagesDispatch *bool   `json:"allow_messages_dispatch"`
 	DefaultMappedModel    *string `json:"default_mapped_model"`
+	// 模拟缓存配置（仅 antigravity 平台使用）
+	SimulateCacheEnabled *bool    `json:"simulate_cache_enabled"`
+	SimulateCacheRatio   *float64 `json:"simulate_cache_ratio"`
 	// 从指定分组复制账号（同步操作：先清空当前分组的账号绑定，再绑定源分组的账号）
 	CopyAccountsFromGroupIDs []int64 `json:"copy_accounts_from_group_ids"`
 }
@@ -268,6 +274,8 @@ func (h *GroupHandler) Create(c *gin.Context) {
 		SoraStorageQuotaBytes:           req.SoraStorageQuotaBytes,
 		AllowMessagesDispatch:           req.AllowMessagesDispatch,
 		DefaultMappedModel:              req.DefaultMappedModel,
+		SimulateCacheEnabled:            req.SimulateCacheEnabled,
+		SimulateCacheRatio:              req.SimulateCacheRatio,
 		CopyAccountsFromGroupIDs:        req.CopyAccountsFromGroupIDs,
 	})
 	if err != nil {
@@ -321,6 +329,8 @@ func (h *GroupHandler) Update(c *gin.Context) {
 		SoraStorageQuotaBytes:           req.SoraStorageQuotaBytes,
 		AllowMessagesDispatch:           req.AllowMessagesDispatch,
 		DefaultMappedModel:              req.DefaultMappedModel,
+		SimulateCacheEnabled:            req.SimulateCacheEnabled,
+		SimulateCacheRatio:              req.SimulateCacheRatio,
 		CopyAccountsFromGroupIDs:        req.CopyAccountsFromGroupIDs,
 	})
 	if err != nil {

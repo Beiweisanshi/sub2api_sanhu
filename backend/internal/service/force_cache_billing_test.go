@@ -5,6 +5,8 @@ package service
 import (
 	"context"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestIsForceCacheBilling(t *testing.T) {
@@ -130,4 +132,34 @@ func TestForceCacheBilling_TokenConversion(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestApplyForceCacheBillingWithRatio_UsesVisiblePromptDenominator(t *testing.T) {
+	t.Run("cache_creation counts towards existing cached total", func(t *testing.T) {
+		usage := ClaudeUsage{
+			InputTokens:              50,
+			CacheReadInputTokens:     30,
+			CacheCreationInputTokens: 20,
+		}
+
+		applyForceCacheBillingWithRatio(&usage, 0.5, 123)
+
+		require.Equal(t, 50, usage.InputTokens)
+		require.Equal(t, 30, usage.CacheReadInputTokens)
+		require.Equal(t, 20, usage.CacheCreationInputTokens)
+	})
+
+	t.Run("additional conversion stops at configured visible ratio", func(t *testing.T) {
+		usage := ClaudeUsage{
+			InputTokens:              70,
+			CacheReadInputTokens:     20,
+			CacheCreationInputTokens: 10,
+		}
+
+		applyForceCacheBillingWithRatio(&usage, 0.5, 123)
+
+		require.Equal(t, 50, usage.InputTokens)
+		require.Equal(t, 40, usage.CacheReadInputTokens)
+		require.Equal(t, 10, usage.CacheCreationInputTokens)
+	})
 }

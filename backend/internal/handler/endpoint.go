@@ -172,3 +172,18 @@ func GetUpstreamEndpoint(c *gin.Context, platform string) string {
 	}
 	return DeriveUpstreamEndpoint(inbound, rawPath, platform)
 }
+
+// getGroupSimulateCacheRatio 从 APIKey 的分组信息中提取模拟缓存比例。
+// 仅当分组为 Antigravity、启用了模拟缓存且比例 > 0 时返回有效比例，否则返回 0。
+func getGroupSimulateCacheRatio(apiKey *service.APIKey) float64 {
+	if apiKey == nil || apiKey.Group == nil {
+		return 0
+	}
+	if apiKey.Group.Platform != service.PlatformAntigravity {
+		return 0
+	}
+	if apiKey.Group.SimulateCacheEnabled && apiKey.Group.SimulateCacheRatio > 0 {
+		return apiKey.Group.SimulateCacheRatio
+	}
+	return 0
+}
