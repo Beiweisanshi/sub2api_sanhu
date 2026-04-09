@@ -91,6 +91,7 @@ type AntigravityTokenInfo struct {
 	ProjectID          string `json:"project_id,omitempty"`
 	ProjectIDMissing   bool   `json:"-"`
 	PlanType           string `json:"-"`
+	PrivacyMode        string `json:"-"`
 	SubscriptionStatus string `json:"-"`
 	SubscriptionError  string `json:"-"`
 }
@@ -162,6 +163,9 @@ func (s *AntigravityOAuthService) ExchangeCode(ctx context.Context, input *Antig
 			result.SubscriptionError = loadResult.Subscription.SubscriptionError
 		}
 	}
+
+	// 令牌刚获取，立即设置隐私（不依赖后续账号创建流程）
+	result.PrivacyMode = setAntigravityPrivacy(ctx, result.AccessToken, result.ProjectID, proxyURL)
 
 	return result, nil
 }
@@ -253,6 +257,9 @@ func (s *AntigravityOAuthService) ValidateRefreshToken(ctx context.Context, refr
 			tokenInfo.SubscriptionError = loadResult.Subscription.SubscriptionError
 		}
 	}
+
+	// 令牌刚获取，立即设置隐私
+	tokenInfo.PrivacyMode = setAntigravityPrivacy(ctx, tokenInfo.AccessToken, tokenInfo.ProjectID, proxyURL)
 
 	return tokenInfo, nil
 }
