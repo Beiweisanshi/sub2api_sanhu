@@ -469,11 +469,11 @@ func init() {
 	// group.DefaultMappedModelValidator is a validator for the "default_mapped_model" field. It is called by the builders before save.
 	group.DefaultMappedModelValidator = groupDescDefaultMappedModel.Validators[0].(func(string) error)
 	// groupDescSimulateCacheEnabled is the schema descriptor for simulate_cache_enabled field.
-	groupDescSimulateCacheEnabled := groupFields[29].Descriptor()
+	groupDescSimulateCacheEnabled := groupFields[26].Descriptor()
 	// group.DefaultSimulateCacheEnabled holds the default value on creation for the simulate_cache_enabled field.
 	group.DefaultSimulateCacheEnabled = groupDescSimulateCacheEnabled.Default.(bool)
 	// groupDescSimulateCacheRatio is the schema descriptor for simulate_cache_ratio field.
-	groupDescSimulateCacheRatio := groupFields[30].Descriptor()
+	groupDescSimulateCacheRatio := groupFields[27].Descriptor()
 	// group.DefaultSimulateCacheRatio holds the default value on creation for the simulate_cache_ratio field.
 	group.DefaultSimulateCacheRatio = groupDescSimulateCacheRatio.Default.(float64)
 	// group.SimulateCacheRatioValidator is a validator for the "simulate_cache_ratio" field. It is called by the builders before save.
