@@ -3,9 +3,6 @@ package repository
 import (
 	"compress/flate"
 	"compress/gzip"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -224,7 +221,7 @@ func (s *httpUpstreamService) getClientEntryWithTLS(proxyURL string, accountID i
 		return nil, err
 	}
 	// TLS 指纹客户端使用独立的缓存键，加 "tls:" 前缀
-	cacheKey := "tls:" + buildCacheKey(isolation, proxyKey, accountID) + "|profile:" + buildTLSProfileCacheKey(profile)
+	cacheKey := "tls:" + buildCacheKey(isolation, proxyKey, accountID)
 	poolKey := s.buildPoolKey(isolation, accountConcurrency) + ":tls"
 
 	now := time.Now()
@@ -660,20 +657,6 @@ func buildCacheKey(isolation, proxyKey string, accountID int64) string {
 	default:
 		return fmt.Sprintf("proxy:%s", proxyKey)
 	}
-}
-
-func buildTLSProfileCacheKey(profile *tlsfingerprint.Profile) string {
-	if profile == nil {
-		return "none"
-	}
-
-	payload, err := json.Marshal(profile)
-	if err != nil {
-		return fmt.Sprintf("fallback:%s", profile.Name)
-	}
-
-	sum := sha256.Sum256(payload)
-	return hex.EncodeToString(sum[:8])
 }
 
 // normalizeProxyURL 标准化代理 URL

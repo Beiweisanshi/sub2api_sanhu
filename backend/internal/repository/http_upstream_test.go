@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
-	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
@@ -275,24 +274,6 @@ func (s *HTTPUpstreamSuite) TestIdleTTLDoesNotEvictActive() {
 	_, _ = svc.getOrCreateClient("", 2, 1)
 
 	require.True(s.T(), hasEntry(svc, entry1), "有活跃请求时不应回收")
-}
-
-// TestTLSClientCacheSeparatesProfiles 测试 TLS 指纹连接池按 profile 隔离
-// 验证同账号同代理切换 TLS profile 时不会复用旧 Transport。
-func (s *HTTPUpstreamSuite) TestTLSClientCacheSeparatesProfiles() {
-	s.cfg.Gateway = config.GatewayConfig{ConnectionPoolIsolation: config.ConnectionPoolIsolationAccount}
-	svc := s.newService()
-
-	profileA := &tlsfingerprint.Profile{Name: "profile-a", CipherSuites: []uint16{0x1301}}
-	profileB := &tlsfingerprint.Profile{Name: "profile-b", CipherSuites: []uint16{0x1302}}
-
-	entryA, err := svc.getClientEntryWithTLS("", 1, 1, profileA, false, false)
-	require.NoError(s.T(), err)
-	entryB, err := svc.getClientEntryWithTLS("", 1, 1, profileB, false, false)
-	require.NoError(s.T(), err)
-
-	require.NotSame(s.T(), entryA, entryB, "不同 TLS profile 不应复用同一个连接池")
-	require.Len(s.T(), svc.clients, 2, "不同 profile 应缓存为两个独立客户端")
 }
 
 // TestHTTPUpstreamSuite 运行测试套件

@@ -168,8 +168,6 @@ func (r *apiKeyRepository) GetByKeyForAuth(ctx context.Context, key string) (*se
 				group.FieldSupportedModelScopes,
 				group.FieldAllowMessagesDispatch,
 				group.FieldDefaultMappedModel,
-				group.FieldSimulateCacheEnabled,
-				group.FieldSimulateCacheRatio,
 			)
 		}).
 		Only(ctx)
@@ -665,8 +663,6 @@ func groupEntityToService(g *dbent.Group) *service.Group {
 		SortOrder:                       g.SortOrder,
 		AllowMessagesDispatch:           g.AllowMessagesDispatch,
 		DefaultMappedModel:              g.DefaultMappedModel,
-		SimulateCacheEnabled:            g.SimulateCacheEnabled,
-		SimulateCacheRatio:              g.SimulateCacheRatio,
 		CreatedAt:                       g.CreatedAt,
 		UpdatedAt:                       g.UpdatedAt,
 	}
