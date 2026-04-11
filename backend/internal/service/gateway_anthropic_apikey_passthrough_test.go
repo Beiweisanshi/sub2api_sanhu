@@ -174,25 +174,28 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardStreamPreservesBodyAnd
 	require.NotNil(t, result)
 	require.True(t, result.Stream)
 
-	require.Equal(t, "claude-3-haiku-20240307", gjson.GetBytes(upstream.lastBody, "model").String(), "透传模式应应用账号级模型映射")
+	// 纯透传模式不做 model mapping，body 原样转发
+	require.Equal(t, "claude-3-7-sonnet-20250219", gjson.GetBytes(upstream.lastBody, "model").String(), "纯透传模式不应修改模型")
 
 	require.Equal(t, "upstream-anthropic-key", getHeaderRaw(upstream.lastReq.Header, "x-api-key"))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "authorization"))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "x-goog-api-key"))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "cookie"))
-	require.Equal(t, "2023-06-01", getHeaderRaw(upstream.lastReq.Header, "anthropic-version"))
+	// 纯透传不再自动注入 anthropic-version，由客户端自行控制
 	require.Equal(t, "interleaved-thinking-2025-05-14", getHeaderRaw(upstream.lastReq.Header, "anthropic-beta"))
-	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "x-stainless-lang"), "API Key 透传不应注入 OAuth 指纹头")
+	// 黑名单模式：非黑名单 header 应能通过
+	require.Equal(t, "claude-cli/1.0.0", getHeaderRaw(upstream.lastReq.Header, "user-agent"))
 
 	require.Contains(t, rec.Body.String(), `"cached_tokens":7`)
 	require.NotContains(t, rec.Body.String(), `"cache_read_input_tokens":7`, "透传输出不应被网关改写")
 	require.Equal(t, 7, result.Usage.CacheReadInputTokens, "计费 usage 解析应保留 cached_tokens 兼容")
-	require.Empty(t, rec.Header().Get("Set-Cookie"), "响应头应经过安全过滤")
+	// 纯透传模式：上游响应头全量转发（包括 Set-Cookie）
+	require.Equal(t, "secret=upstream", rec.Header().Get("Set-Cookie"), "纯透传模式应转发上游所有响应头")
 	rawBody, ok := c.Get(OpsUpstreamRequestBodyKey)
 	require.True(t, ok)
 	bodyBytes, ok := rawBody.([]byte)
 	require.True(t, ok, "应以 []byte 形式缓存上游请求体，避免重复 string 拷贝")
-	require.Equal(t, "claude-3-haiku-20240307", gjson.GetBytes(bodyBytes, "model").String(), "缓存的上游请求体应包含映射后的模型")
+	require.Equal(t, "claude-3-7-sonnet-20250219", gjson.GetBytes(bodyBytes, "model").String(), "纯透传模式缓存的请求体不应被修改")
 }
 
 func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardCountTokensPreservesBody(t *testing.T) {
@@ -257,25 +260,27 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardCountTokensPreservesBo
 	err := svc.ForwardCountTokens(context.Background(), c, account, parsed)
 	require.NoError(t, err)
 
-	require.Equal(t, "claude-3-opus-20240229", gjson.GetBytes(upstream.lastBody, "model").String(), "count_tokens 透传模式应应用账号级模型映射")
+	// 纯透传模式不做 model mapping
+	require.Equal(t, "claude-3-5-sonnet-latest", gjson.GetBytes(upstream.lastBody, "model").String(), "纯透传模式不应修改模型")
 	require.Equal(t, "upstream-anthropic-key", getHeaderRaw(upstream.lastReq.Header, "x-api-key"))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "authorization"))
 	require.Empty(t, getHeaderRaw(upstream.lastReq.Header, "cookie"))
 	require.Equal(t, http.StatusOK, rec.Code)
 	require.JSONEq(t, upstreamRespBody, rec.Body.String())
-	require.Empty(t, rec.Header().Get("Set-Cookie"))
+	// 纯透传模式：上游响应头全量转发
+	require.Equal(t, "secret=upstream", rec.Header().Get("Set-Cookie"), "纯透传模式应转发上游所有响应头")
 }
 
-// TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingEdgeCases 覆盖透传模式下模型映射的各种边界情况
-func TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingEdgeCases(t *testing.T) {
+// TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingIgnored 纯透传模式不做 model mapping
+func TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingIgnored(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	tests := []struct {
 		name          string
 		model         string
 		modelMapping  map[string]any // nil = 不配置映射
-		expectedModel string
-		endpoint      string // "messages" or "count_tokens"
+		expectedModel string         // 纯透传模式始终等于原始 model
+		endpoint      string         // "messages" or "count_tokens"
 	}{
 		{
 			name:          "Forward: 无映射配置时不改写模型",
@@ -285,59 +290,31 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingEdgeCases(t *test
 			endpoint:      "messages",
 		},
 		{
-			name:          "Forward: 空映射配置时不改写模型",
-			model:         "claude-sonnet-4-20250514",
-			modelMapping:  map[string]any{},
-			expectedModel: "claude-sonnet-4-20250514",
-			endpoint:      "messages",
-		},
-		{
-			name:          "Forward: 模型不在映射表中时不改写",
-			model:         "claude-sonnet-4-20250514",
-			modelMapping:  map[string]any{"claude-3-haiku-20240307": "claude-3-opus-20240229"},
-			expectedModel: "claude-sonnet-4-20250514",
-			endpoint:      "messages",
-		},
-		{
-			name:          "Forward: 精确匹配映射应改写模型",
+			name:          "Forward: 有映射配置但纯透传忽略映射",
 			model:         "claude-sonnet-4-20250514",
 			modelMapping:  map[string]any{"claude-sonnet-4-20250514": "claude-sonnet-4-5-20241022"},
-			expectedModel: "claude-sonnet-4-5-20241022",
+			expectedModel: "claude-sonnet-4-20250514",
 			endpoint:      "messages",
 		},
 		{
-			name:          "Forward: 通配符映射应改写模型",
+			name:          "Forward: 通配符映射也被忽略",
 			model:         "claude-sonnet-4-20250514",
 			modelMapping:  map[string]any{"claude-sonnet-4-*": "claude-sonnet-4-5-20241022"},
-			expectedModel: "claude-sonnet-4-5-20241022",
+			expectedModel: "claude-sonnet-4-20250514",
 			endpoint:      "messages",
 		},
 		{
-			name:          "CountTokens: 无映射配置时不改写模型",
-			model:         "claude-sonnet-4-20250514",
-			modelMapping:  nil,
-			expectedModel: "claude-sonnet-4-20250514",
-			endpoint:      "count_tokens",
-		},
-		{
-			name:          "CountTokens: 模型不在映射表中时不改写",
-			model:         "claude-sonnet-4-20250514",
-			modelMapping:  map[string]any{"claude-3-haiku-20240307": "claude-3-opus-20240229"},
-			expectedModel: "claude-sonnet-4-20250514",
-			endpoint:      "count_tokens",
-		},
-		{
-			name:          "CountTokens: 精确匹配映射应改写模型",
+			name:          "CountTokens: 有映射配置但纯透传忽略映射",
 			model:         "claude-sonnet-4-20250514",
 			modelMapping:  map[string]any{"claude-sonnet-4-20250514": "claude-sonnet-4-5-20241022"},
-			expectedModel: "claude-sonnet-4-5-20241022",
+			expectedModel: "claude-sonnet-4-20250514",
 			endpoint:      "count_tokens",
 		},
 		{
-			name:          "CountTokens: 通配符映射应改写模型",
+			name:          "CountTokens: 通配符映射也被忽略",
 			model:         "claude-sonnet-4-20250514",
 			modelMapping:  map[string]any{"claude-sonnet-4-*": "claude-sonnet-4-5-20241022"},
-			expectedModel: "claude-sonnet-4-5-20241022",
+			expectedModel: "claude-sonnet-4-20250514",
 			endpoint:      "count_tokens",
 		},
 	}
@@ -422,9 +399,9 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingEdgeCases(t *test
 	}
 }
 
-// TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingPreservesOtherFields
-// 确保模型映射只替换 model 字段，不影响请求体中的其他字段
-func TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingPreservesOtherFields(t *testing.T) {
+// TestGatewayService_AnthropicAPIKeyPassthrough_PurePassthroughPreservesAllFields
+// 纯透传模式不修改请求体任何字段
+func TestGatewayService_AnthropicAPIKeyPassthrough_PurePassthroughPreservesAllFields(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	rec := httptest.NewRecorder()
@@ -473,7 +450,8 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ModelMappingPreservesOtherFie
 	require.NoError(t, err)
 
 	sentBody := upstream.lastBody
-	require.Equal(t, "claude-sonnet-4-5-20241022", gjson.GetBytes(sentBody, "model").String(), "model 应被映射")
+	// 纯透传模式：model mapping 被忽略，所有字段原样转发
+	require.Equal(t, "claude-sonnet-4-20250514", gjson.GetBytes(sentBody, "model").String(), "纯透传不应修改 model")
 	require.Equal(t, "You are a helpful assistant.", gjson.GetBytes(sentBody, "system.0.text").String(), "system 字段不应被修改")
 	require.Equal(t, "hello world", gjson.GetBytes(sentBody, "messages.0.content.0.text").String(), "messages 字段不应被修改")
 	require.Equal(t, "enabled", gjson.GetBytes(sentBody, "thinking.type").String(), "thinking 字段不应被修改")

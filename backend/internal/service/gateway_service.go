@@ -373,6 +373,24 @@ var allowedHeaders = map[string]bool{
 	"x-client-request-id":                       true,
 }
 
+// passthroughBlockedHeaders 透传模式使用黑名单：除了这些 header 外全部转发。
+// 认证头（authorization, x-api-key, x-goog-api-key, cookie）在后续代码中也会删除（defense in depth）。
+var passthroughBlockedHeaders = map[string]bool{
+	"authorization":       true,
+	"x-api-key":           true,
+	"x-goog-api-key":      true,
+	"cookie":              true,
+	"host":                true,
+	"connection":          true,
+	"keep-alive":          true,
+	"proxy-authorization": true,
+	"proxy-connection":    true,
+	"te":                  true,
+	"trailer":             true,
+	"transfer-encoding":   true,
+	"upgrade":             true,
+}
+
 // GatewayCache 定义网关服务的缓存操作接口。
 // 提供粘性会话（Sticky Session）的存储、查询、刷新和删除功能。
 //
@@ -3957,18 +3975,9 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 	}
 
 	if account != nil && account.IsAnthropicAPIKeyPassthroughEnabled() {
-		passthroughBody := parsed.Body
-		passthroughModel := parsed.Model
-		if passthroughModel != "" {
-			if mappedModel := account.GetMappedModel(passthroughModel); mappedModel != passthroughModel {
-				passthroughBody = s.replaceModelInBody(passthroughBody, mappedModel)
-				logger.LegacyPrintf("service.gateway", "Passthrough model mapping: %s -> %s (account: %s)", parsed.Model, mappedModel, account.Name)
-				passthroughModel = mappedModel
-			}
-		}
 		return s.forwardAnthropicAPIKeyPassthroughWithInput(ctx, c, account, anthropicPassthroughForwardInput{
-			Body:          passthroughBody,
-			RequestModel:  passthroughModel,
+			Body:          parsed.Body,
+			RequestModel:  parsed.Model,
 			OriginalModel: parsed.Model,
 			RequestStream: parsed.Stream,
 			StartTime:     startTime,
@@ -4583,9 +4592,6 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	if c != nil {
 		c.Set("anthropic_passthrough", true)
 	}
-	// Pre-filter: strip empty text blocks (including nested in tool_result) to prevent upstream 400.
-	input.Body = StripEmptyTextBlocks(input.Body)
-
 	// 重试间复用同一请求体，避免每次 string(body) 产生额外分配。
 	setOpsUpstreamRequestBody(c, input.Body)
 
@@ -4711,7 +4717,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 				RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
 			}
 		}
-		return s.handleRetryExhaustedError(ctx, resp, c, account)
+		return s.handlePassthroughErrorResponse(ctx, resp, c, account)
 	}
 
 	if resp.StatusCode >= 400 && s.shouldFailoverUpstreamError(resp.StatusCode) {
@@ -4747,7 +4753,7 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 	}
 
 	if resp.StatusCode >= 400 {
-		return s.handleErrorResponse(ctx, resp, c, account)
+		return s.handlePassthroughErrorResponse(ctx, resp, c, account)
 	}
 
 	var usage *ClaudeUsage
@@ -4790,14 +4796,18 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	body []byte,
 	token string,
 ) (*http.Request, error) {
-	targetURL := claudeAPIURL
-	baseURL := account.GetBaseURL()
-	if baseURL != "" {
+	// 透传模式：使用客户端原始 path + query，仅替换 host
+	baseHost := "https://api.anthropic.com"
+	if baseURL := account.GetBaseURL(); baseURL != "" {
 		validatedURL, err := s.validateUpstreamBaseURL(baseURL)
 		if err != nil {
 			return nil, err
 		}
-		targetURL = validatedURL + "/v1/messages?beta=true"
+		baseHost = validatedURL
+	}
+	targetURL := baseHost + c.Request.URL.Path
+	if c.Request.URL.RawQuery != "" {
+		targetURL += "?" + c.Request.URL.RawQuery
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
@@ -4805,15 +4815,15 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 		return nil, err
 	}
 
+	// 透传模式：黑名单过滤，除被屏蔽的 header 外全部转发
 	if c != nil && c.Request != nil {
 		for key, values := range c.Request.Header {
 			lowerKey := strings.ToLower(strings.TrimSpace(key))
-			if !allowedHeaders[lowerKey] {
+			if passthroughBlockedHeaders[lowerKey] {
 				continue
 			}
-			wireKey := resolveWireCasing(key)
 			for _, v := range values {
-				addHeaderRaw(req.Header, wireKey, v)
+				req.Header.Add(key, v)
 			}
 		}
 	}
@@ -4824,13 +4834,6 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 	req.Header.Del("x-goog-api-key")
 	req.Header.Del("cookie")
 	setHeaderRaw(req.Header, "x-api-key", token)
-
-	if getHeaderRaw(req.Header, "content-type") == "" {
-		setHeaderRaw(req.Header, "content-type", "application/json")
-	}
-	if getHeaderRaw(req.Header, "anthropic-version") == "" {
-		setHeaderRaw(req.Header, "anthropic-version", "2023-06-01")
-	}
 
 	return req, nil
 }
@@ -4847,7 +4850,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 		s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
 	}
 
-	writeAnthropicPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	writeAllUpstreamResponseHeaders(c.Writer.Header(), resp.Header)
 
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if contentType == "" {
@@ -5154,7 +5157,7 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 
 	usage := parseClaudeUsageFromResponseBody(body)
 
-	writeAnthropicPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	writeAllUpstreamResponseHeaders(c.Writer.Header(), resp.Header)
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if contentType == "" {
 		contentType = "application/json"
@@ -5176,6 +5179,35 @@ func writeAnthropicPassthroughResponseHeaders(dst http.Header, src http.Header, 
 	}
 	if v := strings.TrimSpace(src.Get("x-request-id")); v != "" {
 		dst.Set("x-request-id", v)
+	}
+}
+
+// responseBlockedHeaders 透传模式响应侧需屏蔽的 hop-by-hop 头部。
+// content-length 由 Go ResponseWriter 自动管理，不应手动设置。
+var responseBlockedHeaders = map[string]bool{
+	"connection":        true,
+	"keep-alive":        true,
+	"proxy-authenticate": true,
+	"proxy-authorization": true,
+	"te":                true,
+	"trailer":           true,
+	"transfer-encoding": true,
+	"upgrade":           true,
+	"content-length":    true,
+}
+
+// writeAllUpstreamResponseHeaders 透传模式：上游响应头原样回写，仅跳过 hop-by-hop 头部。
+func writeAllUpstreamResponseHeaders(dst http.Header, src http.Header) {
+	if dst == nil || src == nil {
+		return
+	}
+	for key, values := range src {
+		if responseBlockedHeaders[strings.ToLower(key)] {
+			continue
+		}
+		for _, v := range values {
+			dst.Add(key, v)
+		}
 	}
 }
 
@@ -6609,6 +6641,56 @@ func (s *GatewayService) handleRetryExhaustedError(ctx context.Context, resp *ht
 		return nil, fmt.Errorf("upstream error: %d (retries exhausted)", resp.StatusCode)
 	}
 	return nil, fmt.Errorf("upstream error: %d (retries exhausted) message=%s", resp.StatusCode, upstreamMsg)
+}
+
+// handlePassthroughErrorResponse 透传模式错误处理：原样转发上游错误 status + headers + body，
+// 仅保留运维侧的 rate limit 追踪和 ops 日志（只读，不修改响应内容）。
+func (s *GatewayService) handlePassthroughErrorResponse(ctx context.Context, resp *http.Response, c *gin.Context, account *Account) (*ForwardResult, error) {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+
+	if s.rateLimitService != nil {
+		s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, body)
+	}
+
+	upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(body))
+	upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+
+	upstreamDetail := ""
+	if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+		maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
+		if maxBytes <= 0 {
+			maxBytes = 2048
+		}
+		upstreamDetail = truncateString(string(body), maxBytes)
+	}
+	setOpsUpstreamError(c, resp.StatusCode, upstreamMsg, upstreamDetail)
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		Platform:           account.Platform,
+		AccountID:          account.ID,
+		AccountName:        account.Name,
+		UpstreamStatusCode: resp.StatusCode,
+		UpstreamRequestID:  resp.Header.Get("x-request-id"),
+		Passthrough:        true,
+		Kind:               "http_error",
+		Message:            upstreamMsg,
+		Detail:             upstreamDetail,
+	})
+
+	logger.LegacyPrintf("service.gateway", "[Anthropic Passthrough] Upstream error (passthrough): Account=%d(%s) Status=%d RequestID=%s Body=%s",
+		account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(body), 1000))
+
+	// 原样透传：上游 status + headers + body
+	writeAllUpstreamResponseHeaders(c.Writer.Header(), resp.Header)
+	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
+	if contentType == "" {
+		contentType = "application/json"
+	}
+	c.Data(resp.StatusCode, contentType, body)
+
+	if upstreamMsg == "" {
+		return nil, fmt.Errorf("upstream error: %d", resp.StatusCode)
+	}
+	return nil, fmt.Errorf("upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
 }
 
 // streamingResult 流式响应结果
@@ -8117,14 +8199,7 @@ func (s *GatewayService) ForwardCountTokens(ctx context.Context, c *gin.Context,
 	}
 
 	if account != nil && account.IsAnthropicAPIKeyPassthroughEnabled() {
-		passthroughBody := parsed.Body
-		if reqModel := parsed.Model; reqModel != "" {
-			if mappedModel := account.GetMappedModel(reqModel); mappedModel != reqModel {
-				passthroughBody = s.replaceModelInBody(passthroughBody, mappedModel)
-				logger.LegacyPrintf("service.gateway", "CountTokens passthrough model mapping: %s -> %s (account: %s)", reqModel, mappedModel, account.Name)
-			}
-		}
-		return s.forwardCountTokensAnthropicAPIKeyPassthrough(ctx, c, account, passthroughBody)
+		return s.forwardCountTokensAnthropicAPIKeyPassthrough(ctx, c, account, parsed.Body)
 	}
 
 	// Bedrock 不支持 count_tokens 端点
@@ -8391,21 +8466,22 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 			Detail:             upstreamDetail,
 		})
 
-		errMsg := "Upstream request failed"
-		switch resp.StatusCode {
-		case 429:
-			errMsg = "Rate limit exceeded"
-		case 529:
-			errMsg = "Service overloaded"
+		// 透传模式：原样转发上游错误 body
+		logger.LegacyPrintf("service.gateway", "[count_tokens passthrough] Upstream error: Account=%d(%s) Status=%d RequestID=%s Body=%s",
+			account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
+		writeAllUpstreamResponseHeaders(c.Writer.Header(), resp.Header)
+		ct := strings.TrimSpace(resp.Header.Get("Content-Type"))
+		if ct == "" {
+			ct = "application/json"
 		}
-		s.countTokensError(c, resp.StatusCode, "upstream_error", errMsg)
+		c.Data(resp.StatusCode, ct, respBody)
 		if upstreamMsg == "" {
 			return fmt.Errorf("upstream error: %d", resp.StatusCode)
 		}
 		return fmt.Errorf("upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
 	}
 
-	writeAnthropicPassthroughResponseHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	writeAllUpstreamResponseHeaders(c.Writer.Header(), resp.Header)
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if contentType == "" {
 		contentType = "application/json"
@@ -8421,14 +8497,18 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	body []byte,
 	token string,
 ) (*http.Request, error) {
-	targetURL := claudeAPICountTokensURL
-	baseURL := account.GetBaseURL()
-	if baseURL != "" {
+	// 透传模式：使用客户端原始 path + query，仅替换 host
+	baseHost := "https://api.anthropic.com"
+	if baseURL := account.GetBaseURL(); baseURL != "" {
 		validatedURL, err := s.validateUpstreamBaseURL(baseURL)
 		if err != nil {
 			return nil, err
 		}
-		targetURL = validatedURL + "/v1/messages/count_tokens?beta=true"
+		baseHost = validatedURL
+	}
+	targetURL := baseHost + c.Request.URL.Path
+	if c.Request.URL.RawQuery != "" {
+		targetURL += "?" + c.Request.URL.RawQuery
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
@@ -8436,15 +8516,15 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 		return nil, err
 	}
 
+	// 透传模式：黑名单过滤，除被屏蔽的 header 外全部转发
 	if c != nil && c.Request != nil {
 		for key, values := range c.Request.Header {
 			lowerKey := strings.ToLower(strings.TrimSpace(key))
-			if !allowedHeaders[lowerKey] {
+			if passthroughBlockedHeaders[lowerKey] {
 				continue
 			}
-			wireKey := resolveWireCasing(key)
 			for _, v := range values {
-				addHeaderRaw(req.Header, wireKey, v)
+				req.Header.Add(key, v)
 			}
 		}
 	}
@@ -8454,13 +8534,6 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 	req.Header.Del("x-goog-api-key")
 	req.Header.Del("cookie")
 	req.Header.Set("x-api-key", token)
-
-	if req.Header.Get("content-type") == "" {
-		req.Header.Set("content-type", "application/json")
-	}
-	if req.Header.Get("anthropic-version") == "" {
-		req.Header.Set("anthropic-version", "2023-06-01")
-	}
 
 	return req, nil
 }
