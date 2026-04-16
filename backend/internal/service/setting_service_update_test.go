@@ -219,3 +219,24 @@ func TestSettingService_UpdateSettings_TelemetryEnabledPersistsAndUpdatesConfig(
 	require.Equal(t, "false", repo.updates[SettingKeyTelemetryEnabled])
 	require.False(t, cfg.Telemetry.Enabled)
 }
+
+func TestSettingService_UpdateSettings_TablePreferences(t *testing.T) {
+	repo := &settingUpdateRepoStub{}
+	svc := NewSettingService(repo, &config.Config{})
+
+	err := svc.UpdateSettings(context.Background(), &SystemSettings{
+		TableDefaultPageSize: 50,
+		TablePageSizeOptions: []int{20, 50, 100},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "50", repo.updates[SettingKeyTableDefaultPageSize])
+	require.Equal(t, "[20,50,100]", repo.updates[SettingKeyTablePageSizeOptions])
+
+	err = svc.UpdateSettings(context.Background(), &SystemSettings{
+		TableDefaultPageSize: 1000,
+		TablePageSizeOptions: []int{20, 100},
+	})
+	require.NoError(t, err)
+	require.Equal(t, "1000", repo.updates[SettingKeyTableDefaultPageSize])
+	require.Equal(t, "[20,100]", repo.updates[SettingKeyTablePageSizeOptions])
+}
