@@ -1101,9 +1101,22 @@ func (r *accountRepository) SetModelRateLimit(ctx context.Context, id int64, sco
 	if affected == 0 {
 		return service.ErrAccountNotFound
 	}
+
+	// 同步更新账号级 rate_limit_reset_at，使 ListSchedulable 查询直接排除此账号。
+	// 仅在新 resetAt 晚于现有账号级限流时才更新（取最大值，避免缩短已有限流）。
+	if _, err := client.ExecContext(ctx,
+		`UPDATE accounts SET rate_limited_at = NOW(), rate_limit_reset_at = $1
+		 WHERE id = $2 AND deleted_at IS NULL
+		   AND (rate_limit_reset_at IS NULL OR rate_limit_reset_at < $1)`,
+		resetAt.UTC(), id,
+	); err != nil {
+		logger.LegacyPrintf("repository.account", "[SetModelRateLimit] sync account-level rate limit failed: account=%d err=%v", id, err)
+	}
+
 	if err := enqueueSchedulerOutbox(ctx, r.sql, service.SchedulerOutboxEventAccountChanged, &id, nil, nil); err != nil {
 		logger.LegacyPrintf("repository.account", "[SchedulerOutbox] enqueue model rate limit failed: account=%d err=%v", id, err)
 	}
+	r.syncSchedulerAccountSnapshot(ctx, id)
 	return nil
 }
 

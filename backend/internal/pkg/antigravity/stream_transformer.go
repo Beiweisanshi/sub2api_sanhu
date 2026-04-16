@@ -217,6 +217,11 @@ func (p *StreamingProcessor) ProcessLine(line string) []byte {
 		}
 	}
 
+	// 发送 message_start（在 usage 更新之后，确保 message_start 包含模拟缓存后的值）
+	if !p.messageStartSent {
+		_, _ = result.Write(p.emitMessageStart(&v1Resp))
+	}
+
 	// 处理 parts
 	if len(geminiResp.Candidates) > 0 && geminiResp.Candidates[0].Content != nil {
 		for _, part := range geminiResp.Candidates[0].Content.Parts {
