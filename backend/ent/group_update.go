@@ -567,6 +567,41 @@ func (_u *GroupUpdate) SetNillableMessagesDispatchModelConfig(v *domain.OpenAIMe
 	return _u
 }
 
+// SetSimulateCacheEnabled sets the "simulate_cache_enabled" field.
+func (_u *GroupUpdate) SetSimulateCacheEnabled(v bool) *GroupUpdate {
+	_u.mutation.SetSimulateCacheEnabled(v)
+	return _u
+}
+
+// SetNillableSimulateCacheEnabled sets the "simulate_cache_enabled" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableSimulateCacheEnabled(v *bool) *GroupUpdate {
+	if v != nil {
+		_u.SetSimulateCacheEnabled(*v)
+	}
+	return _u
+}
+
+// SetSimulateCacheRatio sets the "simulate_cache_ratio" field.
+func (_u *GroupUpdate) SetSimulateCacheRatio(v float64) *GroupUpdate {
+	_u.mutation.ResetSimulateCacheRatio()
+	_u.mutation.SetSimulateCacheRatio(v)
+	return _u
+}
+
+// SetNillableSimulateCacheRatio sets the "simulate_cache_ratio" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableSimulateCacheRatio(v *float64) *GroupUpdate {
+	if v != nil {
+		_u.SetSimulateCacheRatio(*v)
+	}
+	return _u
+}
+
+// AddSimulateCacheRatio adds value to the "simulate_cache_ratio" field.
+func (_u *GroupUpdate) AddSimulateCacheRatio(v float64) *GroupUpdate {
+	_u.mutation.AddSimulateCacheRatio(v)
+	return _u
+}
+
 // AddAPIKeyIDs adds the "api_keys" edge to the APIKey entity by IDs.
 func (_u *GroupUpdate) AddAPIKeyIDs(ids ...int64) *GroupUpdate {
 	_u.mutation.AddAPIKeyIDs(ids...)
@@ -857,6 +892,11 @@ func (_u *GroupUpdate) check() error {
 			return &ValidationError{Name: "default_mapped_model", err: fmt.Errorf(`ent: validator failed for field "Group.default_mapped_model": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.SimulateCacheRatio(); ok {
+		if err := group.SimulateCacheRatioValidator(v); err != nil {
+			return &ValidationError{Name: "simulate_cache_ratio", err: fmt.Errorf(`ent: validator failed for field "Group.simulate_cache_ratio": %w`, err)}
+		}
+	}
 	return nil
 }
 
@@ -1029,6 +1069,15 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	}
 	if value, ok := _u.mutation.MessagesDispatchModelConfig(); ok {
 		_spec.SetField(group.FieldMessagesDispatchModelConfig, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.SimulateCacheEnabled(); ok {
+		_spec.SetField(group.FieldSimulateCacheEnabled, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.SimulateCacheRatio(); ok {
+		_spec.SetField(group.FieldSimulateCacheRatio, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedSimulateCacheRatio(); ok {
+		_spec.AddField(group.FieldSimulateCacheRatio, field.TypeFloat64, value)
 	}
 	if _u.mutation.APIKeysCleared() {
 		edge := &sqlgraph.EdgeSpec{
@@ -1875,6 +1924,41 @@ func (_u *GroupUpdateOne) SetNillableMessagesDispatchModelConfig(v *domain.OpenA
 	return _u
 }
 
+// SetSimulateCacheEnabled sets the "simulate_cache_enabled" field.
+func (_u *GroupUpdateOne) SetSimulateCacheEnabled(v bool) *GroupUpdateOne {
+	_u.mutation.SetSimulateCacheEnabled(v)
+	return _u
+}
+
+// SetNillableSimulateCacheEnabled sets the "simulate_cache_enabled" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableSimulateCacheEnabled(v *bool) *GroupUpdateOne {
+	if v != nil {
+		_u.SetSimulateCacheEnabled(*v)
+	}
+	return _u
+}
+
+// SetSimulateCacheRatio sets the "simulate_cache_ratio" field.
+func (_u *GroupUpdateOne) SetSimulateCacheRatio(v float64) *GroupUpdateOne {
+	_u.mutation.ResetSimulateCacheRatio()
+	_u.mutation.SetSimulateCacheRatio(v)
+	return _u
+}
+
+// SetNillableSimulateCacheRatio sets the "simulate_cache_ratio" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableSimulateCacheRatio(v *float64) *GroupUpdateOne {
+	if v != nil {
+		_u.SetSimulateCacheRatio(*v)
+	}
+	return _u
+}
+
+// AddSimulateCacheRatio adds value to the "simulate_cache_ratio" field.
+func (_u *GroupUpdateOne) AddSimulateCacheRatio(v float64) *GroupUpdateOne {
+	_u.mutation.AddSimulateCacheRatio(v)
+	return _u
+}
+
 // AddAPIKeyIDs adds the "api_keys" edge to the APIKey entity by IDs.
 func (_u *GroupUpdateOne) AddAPIKeyIDs(ids ...int64) *GroupUpdateOne {
 	_u.mutation.AddAPIKeyIDs(ids...)
@@ -2178,6 +2262,11 @@ func (_u *GroupUpdateOne) check() error {
 			return &ValidationError{Name: "default_mapped_model", err: fmt.Errorf(`ent: validator failed for field "Group.default_mapped_model": %w`, err)}
 		}
 	}
+	if v, ok := _u.mutation.SimulateCacheRatio(); ok {
+		if err := group.SimulateCacheRatioValidator(v); err != nil {
+			return &ValidationError{Name: "simulate_cache_ratio", err: fmt.Errorf(`ent: validator failed for field "Group.simulate_cache_ratio": %w`, err)}
+		}
+	}
 	return nil
 }
 
@@ -2367,6 +2456,15 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if value, ok := _u.mutation.MessagesDispatchModelConfig(); ok {
 		_spec.SetField(group.FieldMessagesDispatchModelConfig, field.TypeJSON, value)
+	}
+	if value, ok := _u.mutation.SimulateCacheEnabled(); ok {
+		_spec.SetField(group.FieldSimulateCacheEnabled, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.SimulateCacheRatio(); ok {
+		_spec.SetField(group.FieldSimulateCacheRatio, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedSimulateCacheRatio(); ok {
+		_spec.AddField(group.FieldSimulateCacheRatio, field.TypeFloat64, value)
 	}
 	if _u.mutation.APIKeysCleared() {
 		edge := &sqlgraph.EdgeSpec{

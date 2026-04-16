@@ -44,10 +44,9 @@ const (
 	antigravityDefaultRateLimitDuration = 30 * time.Second // 默认限流时间（无 retryDelay 时使用）
 
 	// MODEL_CAPACITY_EXHAUSTED 专用重试参数
-	// 模型容量不足时，所有账号共享同一容量池，切换账号无意义
-	// 使用固定 1s 间隔重试，最多重试 60 次
-	antigravityModelCapacityRetryMaxAttempts = 60
-	antigravityModelCapacityRetryWait        = 1 * time.Second
+	// 单账号最多重试 2 次（间隔 3s），然后切换账号
+	antigravityModelCapacityRetryMaxAttempts = 2
+	antigravityModelCapacityRetryWait        = 3 * time.Second
 
 	// Google RPC 状态和类型常量
 	googleRPCStatusResourceExhausted      = "RESOURCE_EXHAUSTED"
@@ -71,7 +70,7 @@ const (
 	antigravitySingleAccountSmartRetryTotalMaxWait = 30 * time.Second
 
 	// MODEL_CAPACITY_EXHAUSTED 全局去重：重试全部失败后的 cooldown 时间
-	antigravityModelCapacityCooldown = 10 * time.Second
+	antigravityModelCapacityCooldown = 6 * time.Second
 )
 
 // antigravityPassthroughErrorMessages 透传给客户端的错误消息白名单（小写）

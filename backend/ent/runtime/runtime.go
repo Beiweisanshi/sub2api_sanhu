@@ -477,6 +477,30 @@ func init() {
 	groupDescMessagesDispatchModelConfig := groupFields[26].Descriptor()
 	// group.DefaultMessagesDispatchModelConfig holds the default value on creation for the messages_dispatch_model_config field.
 	group.DefaultMessagesDispatchModelConfig = groupDescMessagesDispatchModelConfig.Default.(domain.OpenAIMessagesDispatchModelConfig)
+	// groupDescSimulateCacheEnabled is the schema descriptor for simulate_cache_enabled field.
+	groupDescSimulateCacheEnabled := groupFields[27].Descriptor()
+	// group.DefaultSimulateCacheEnabled holds the default value on creation for the simulate_cache_enabled field.
+	group.DefaultSimulateCacheEnabled = groupDescSimulateCacheEnabled.Default.(bool)
+	// groupDescSimulateCacheRatio is the schema descriptor for simulate_cache_ratio field.
+	groupDescSimulateCacheRatio := groupFields[28].Descriptor()
+	// group.DefaultSimulateCacheRatio holds the default value on creation for the simulate_cache_ratio field.
+	group.DefaultSimulateCacheRatio = groupDescSimulateCacheRatio.Default.(float64)
+	// group.SimulateCacheRatioValidator is a validator for the "simulate_cache_ratio" field. It is called by the builders before save.
+	group.SimulateCacheRatioValidator = func() func(float64) error {
+		validators := groupDescSimulateCacheRatio.Validators
+		fns := [...]func(float64) error{
+			validators[0].(func(float64) error),
+			validators[1].(func(float64) error),
+		}
+		return func(simulate_cache_ratio float64) error {
+			for _, fn := range fns {
+				if err := fn(simulate_cache_ratio); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}()
 	idempotencyrecordMixin := schema.IdempotencyRecord{}.Mixin()
 	idempotencyrecordMixinFields0 := idempotencyrecordMixin[0].Fields()
 	_ = idempotencyrecordMixinFields0
