@@ -712,6 +712,7 @@ func (r *accountRepository) SetError(ctx context.Context, id int64, errorMsg str
 	_, err := r.client.Account.Update().
 		Where(dbaccount.IDEQ(id)).
 		SetStatus(service.StatusError).
+		SetSchedulable(false).
 		SetErrorMessage(errorMsg).
 		Save(ctx)
 	if err != nil {
