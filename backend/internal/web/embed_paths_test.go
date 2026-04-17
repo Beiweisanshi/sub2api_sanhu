@@ -9,6 +9,8 @@ func TestShouldBypassEmbeddedFrontend(t *testing.T) {
 	}{
 		{path: "/api/v1/settings/public", want: true},
 		{path: "/v1/messages", want: true},
+		{path: "/sora/tasks", want: true},
+		{path: "/antigravity/jobs", want: true},
 		{path: "/policy_limits", want: true},
 		{path: "/settings", want: true},
 		{path: "/responses", want: true},
