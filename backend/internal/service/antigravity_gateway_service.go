@@ -16,7 +16,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -44,9 +43,11 @@ const (
 	antigravityDefaultRateLimitDuration = 30 * time.Second // 默认限流时间（无 retryDelay 时使用）
 
 	// MODEL_CAPACITY_EXHAUSTED 专用重试参数
-	// 单账号最多重试 2 次（间隔 3s），然后切换账号
+	// 单账号最多重试 2 次（间隔 3s），然后设短暂 cooldown 并切换账号
 	antigravityModelCapacityRetryMaxAttempts = 2
 	antigravityModelCapacityRetryWait        = 3 * time.Second
+	// MODEL_CAPACITY_EXHAUSTED 重试耗尽后，对当前账号设模型级 cooldown 再换号
+	antigravityModelCapacitySwitchCooldown = 30 * time.Second
 
 	// Google RPC 状态和类型常量
 	googleRPCStatusResourceExhausted      = "RESOURCE_EXHAUSTED"
@@ -69,8 +70,6 @@ const (
 	// 超过此上限将不再重试，直接返回 503
 	antigravitySingleAccountSmartRetryTotalMaxWait = 30 * time.Second
 
-	// MODEL_CAPACITY_EXHAUSTED 全局去重：重试全部失败后的 cooldown 时间
-	antigravityModelCapacityCooldown = 6 * time.Second
 )
 
 // antigravityPassthroughErrorMessages 透传给客户端的错误消息白名单（小写）
@@ -81,8 +80,6 @@ var antigravityPassthroughErrorMessages = []string{
 
 // MODEL_CAPACITY_EXHAUSTED 全局去重：避免多个并发请求同时对同一模型进行容量耗尽重试
 var (
-	modelCapacityExhaustedMu    sync.RWMutex
-	modelCapacityExhaustedUntil = make(map[string]time.Time) // modelName -> cooldown until
 )
 
 const (
@@ -95,7 +92,8 @@ const (
 type AntigravityAccountSwitchError struct {
 	OriginalAccountID int64
 	RateLimitedModel  string
-	IsStickySession   bool // 是否为粘性会话切换（决定是否缓存计费）
+	IsStickySession   bool   // 是否为粘性会话切换（决定是否缓存计费）
+	ResponseBody      []byte // 上游响应体，用于错误透传规则匹配
 }
 
 func (e *AntigravityAccountSwitchError) Error() string {
@@ -242,6 +240,7 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 				OriginalAccountID: p.account.ID,
 				RateLimitedModel:  modelName,
 				IsStickySession:   p.isStickySession,
+				ResponseBody:      respBody,
 			},
 		}
 	}
@@ -251,30 +250,12 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 		var lastRetryResp *http.Response
 		var lastRetryBody []byte
 
-		// MODEL_CAPACITY_EXHAUSTED 使用独立的重试参数（60 次，固定 1s 间隔）
+		// MODEL_CAPACITY_EXHAUSTED 使用独立的重试参数（2 次，固定 3s 间隔），耗尽后用上游 retryDelay 设 cooldown 并换号
 		maxAttempts := antigravitySmartRetryMaxAttempts
+		upstreamRetryDelay := waitDuration // 保存上游原始 retryDelay，用于重试耗尽后设 cooldown
 		if isModelCapacityExhausted {
 			maxAttempts = antigravityModelCapacityRetryMaxAttempts
 			waitDuration = antigravityModelCapacityRetryWait
-
-			// 全局去重：如果其他 goroutine 已在重试同一模型且尚在 cooldown 中，直接返回 503
-			if modelName != "" {
-				modelCapacityExhaustedMu.RLock()
-				cooldownUntil, exists := modelCapacityExhaustedUntil[modelName]
-				modelCapacityExhaustedMu.RUnlock()
-				if exists && time.Now().Before(cooldownUntil) {
-					log.Printf("%s status=%d model_capacity_exhausted_dedup model=%s account=%d cooldown_until=%v (skip retry)",
-						p.prefix, resp.StatusCode, modelName, p.account.ID, cooldownUntil.Format("15:04:05"))
-					return &smartRetryResult{
-						action: smartRetryActionBreakWithResp,
-						resp: &http.Response{
-							StatusCode: resp.StatusCode,
-							Header:     resp.Header.Clone(),
-							Body:       io.NopCloser(bytes.NewReader(respBody)),
-						},
-					}
-				}
-			}
 		}
 
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -308,12 +289,6 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 			retryResp, retryErr := p.httpUpstream.Do(retryReq, p.proxyURL, p.account.ID, p.account.Concurrency)
 			if retryErr == nil && retryResp != nil && retryResp.StatusCode != http.StatusTooManyRequests && retryResp.StatusCode != http.StatusServiceUnavailable {
 				log.Printf("%s status=%d smart_retry_success attempt=%d/%d", p.prefix, retryResp.StatusCode, attempt, maxAttempts)
-				// 重试成功，清除 MODEL_CAPACITY_EXHAUSTED cooldown
-				if isModelCapacityExhausted && modelName != "" {
-					modelCapacityExhaustedMu.Lock()
-					delete(modelCapacityExhaustedUntil, modelName)
-					modelCapacityExhaustedMu.Unlock()
-				}
 				return &smartRetryResult{action: smartRetryActionBreakWithResp, resp: retryResp}
 			}
 
@@ -352,23 +327,44 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 			retryBody = respBody
 		}
 
-		// MODEL_CAPACITY_EXHAUSTED：模型容量不足，切换账号无意义
-		// 直接返回上游错误响应，不设置模型限流，不切换账号
+		// MODEL_CAPACITY_EXHAUSTED：用上游 retryDelay 设模型级 cooldown，从号池移除后换号。
+		// cooldown 最小 30s（防止上游返回极短 delay），直接使用上游反馈值禁用该账号的该模型。
+		// 单账号退避重试模式下跳过 cooldown 和切号，避免唯一账号被模型级限流过滤导致 "No available accounts"。
 		if isModelCapacityExhausted {
-			// 设置 cooldown，让后续请求快速失败，避免重复重试
-			if modelName != "" {
-				modelCapacityExhaustedMu.Lock()
-				modelCapacityExhaustedUntil[modelName] = time.Now().Add(antigravityModelCapacityCooldown)
-				modelCapacityExhaustedMu.Unlock()
+			if resp.StatusCode == http.StatusServiceUnavailable && isSingleAccountRetry(p.ctx) {
+				logger.LegacyPrintf("service.antigravity_gateway", "%s status=%d smart_retry_exhausted_model_capacity_single_account attempts=%d model=%s account=%d body=%s (return 503 directly, skip cooldown)",
+					p.prefix, resp.StatusCode, maxAttempts, modelName, p.account.ID, truncateForLog(retryBody, 200))
+				return &smartRetryResult{
+					action: smartRetryActionBreakWithResp,
+					resp: &http.Response{
+						StatusCode: resp.StatusCode,
+						Header:     resp.Header.Clone(),
+						Body:       io.NopCloser(bytes.NewReader(retryBody)),
+					},
+				}
 			}
-			log.Printf("%s status=%d smart_retry_exhausted_model_capacity attempts=%d model=%s account=%d body=%s (model capacity exhausted, not switching account)",
-				p.prefix, resp.StatusCode, maxAttempts, modelName, p.account.ID, truncateForLog(retryBody, 200))
+
+			cooldown := upstreamRetryDelay
+			if cooldown < antigravityModelCapacitySwitchCooldown {
+				cooldown = antigravityModelCapacitySwitchCooldown
+			}
+			if modelName != "" {
+				resetAt := time.Now().Add(cooldown)
+				if !setModelRateLimitByModelName(p.ctx, p.accountRepo, p.account.ID, modelName, p.prefix, resp.StatusCode, resetAt, true) {
+					p.handleError(p.ctx, p.prefix, p.account, resp.StatusCode, resp.Header, retryBody, p.requestedModel, p.groupID, p.sessionHash, p.isStickySession)
+				} else {
+					s.updateAccountModelRateLimitInCache(p.ctx, p.account, modelName, resetAt)
+				}
+			}
+			log.Printf("%s status=%d smart_retry_exhausted_model_capacity attempts=%d model=%s account=%d cooldown=%v upstream_retry_delay=%v (switching account)",
+				p.prefix, resp.StatusCode, maxAttempts, modelName, p.account.ID, cooldown, upstreamRetryDelay)
 			return &smartRetryResult{
 				action: smartRetryActionBreakWithResp,
-				resp: &http.Response{
-					StatusCode: resp.StatusCode,
-					Header:     resp.Header.Clone(),
-					Body:       io.NopCloser(bytes.NewReader(retryBody)),
+				switchError: &AntigravityAccountSwitchError{
+					OriginalAccountID: p.account.ID,
+					RateLimitedModel:  modelName,
+					IsStickySession:   p.isStickySession,
+					ResponseBody:      retryBody,
 				},
 			}
 		}
@@ -414,6 +410,7 @@ func (s *AntigravityGatewayService) handleSmartRetry(p antigravityRetryLoopParam
 				OriginalAccountID: p.account.ID,
 				RateLimitedModel:  modelName,
 				IsStickySession:   p.isStickySession,
+				ResponseBody:      retryBody,
 			},
 		}
 	}
@@ -970,7 +967,7 @@ func (s *AntigravityGatewayService) applyErrorPolicy(p antigravityRetryLoopParam
 	case ErrorPolicyTempUnscheduled:
 		slog.Info("temp_unschedulable_matched",
 			"prefix", p.prefix, "status_code", statusCode, "account_id", p.account.ID)
-		return true, statusCode, &AntigravityAccountSwitchError{OriginalAccountID: p.account.ID, RateLimitedModel: p.requestedModel, IsStickySession: p.isStickySession}
+		return true, statusCode, &AntigravityAccountSwitchError{OriginalAccountID: p.account.ID, RateLimitedModel: p.requestedModel, IsStickySession: p.isStickySession, ResponseBody: respBody}
 	}
 	return false, statusCode, nil
 }
@@ -1453,6 +1450,7 @@ func (s *AntigravityGatewayService) Forward(ctx context.Context, c *gin.Context,
 		if switchErr, ok := IsAntigravityAccountSwitchError(err); ok {
 			return nil, &UpstreamFailoverError{
 				StatusCode:        http.StatusServiceUnavailable,
+				ResponseBody:      switchErr.ResponseBody,
 				ForceCacheBilling: switchErr.IsStickySession,
 			}
 		}
@@ -2208,6 +2206,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 		if switchErr, ok := IsAntigravityAccountSwitchError(err); ok {
 			return nil, &UpstreamFailoverError{
 				StatusCode:        http.StatusServiceUnavailable,
+				ResponseBody:      switchErr.ResponseBody,
 				ForceCacheBilling: switchErr.IsStickySession,
 			}
 		}
@@ -2343,6 +2342,7 @@ func (s *AntigravityGatewayService) ForwardGemini(ctx context.Context, c *gin.Co
 						})
 						return nil, &UpstreamFailoverError{
 							StatusCode:        http.StatusServiceUnavailable,
+							ResponseBody:      switchErr.ResponseBody,
 							ForceCacheBilling: switchErr.IsStickySession,
 						}
 					}
@@ -2828,6 +2828,7 @@ func (s *AntigravityGatewayService) handleModelRateLimit(p *handleModelRateLimit
 			OriginalAccountID: p.account.ID,
 			RateLimitedModel:  info.ModelName,
 			IsStickySession:   p.isStickySession,
+			ResponseBody:      p.body,
 		},
 	}
 }
