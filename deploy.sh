@@ -192,10 +192,31 @@ ReadWritePaths=/opt/sub2api
 Environment=GIN_MODE=release
 Environment=SERVER_HOST=0.0.0.0
 Environment=SERVER_PORT=8080
+# mkx: TOTP_ENCRYPTION_KEY 等敏感变量从 .env 读取，避免写入 systemd unit 明文 (2026-04-20)
+EnvironmentFile=-/opt/sub2api/.env
 
 [Install]
 WantedBy=multi-user.target
 SERVICE_EOF
+
+# 生成或保留 TOTP 加密密钥（AES-256，32 字节 = 64 hex）。
+# mkx: 必须固定，否则每次重启自动生成新 key 会导致支付服务商配置无法解密 (2026-04-20)
+ENV_FILE=/opt/sub2api/.env
+if [ ! -f "$ENV_FILE" ] || ! grep -q '^TOTP_ENCRYPTION_KEY=' "$ENV_FILE"; then
+    TOTP_KEY=$(openssl rand -hex 32)
+    touch "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+    chown sub2api:sub2api "$ENV_FILE"
+    # 追加（若已存在其他变量则保留）
+    if grep -q '^TOTP_ENCRYPTION_KEY=' "$ENV_FILE" 2>/dev/null; then
+        sed -i "s|^TOTP_ENCRYPTION_KEY=.*|TOTP_ENCRYPTION_KEY=${TOTP_KEY}|" "$ENV_FILE"
+    else
+        echo "TOTP_ENCRYPTION_KEY=${TOTP_KEY}" >> "$ENV_FILE"
+    fi
+    echo "已生成 TOTP_ENCRYPTION_KEY 并写入 $ENV_FILE"
+else
+    echo "$ENV_FILE 已存在 TOTP_ENCRYPTION_KEY，保留不变"
+fi
 
 systemctl daemon-reload
 systemctl enable sub2api
@@ -203,6 +224,42 @@ echo "systemd 服务已安装并启用开机自启"
 INIT_EOF
 
     success "服务器初始化完成"
+}
+
+# ============================================================
+# 为已部署的服务器补齐 TOTP 加密密钥 / EnvironmentFile
+# （在 --init 之前就已上线、没有 .env 的历史实例用这个）
+# ============================================================
+setup_env() {
+    info "检查 / 生成远端 /opt/sub2api/.env ..."
+    $SSH_CMD bash <<'SETUP_EOF'
+set -e
+ENV_FILE=/opt/sub2api/.env
+UNIT=/etc/systemd/system/sub2api.service
+
+if [ ! -f "$ENV_FILE" ] || ! grep -q '^TOTP_ENCRYPTION_KEY=' "$ENV_FILE"; then
+    TOTP_KEY=$(openssl rand -hex 32)
+    touch "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+    chown sub2api:sub2api "$ENV_FILE"
+    if grep -q '^TOTP_ENCRYPTION_KEY=' "$ENV_FILE" 2>/dev/null; then
+        sed -i "s|^TOTP_ENCRYPTION_KEY=.*|TOTP_ENCRYPTION_KEY=${TOTP_KEY}|" "$ENV_FILE"
+    else
+        echo "TOTP_ENCRYPTION_KEY=${TOTP_KEY}" >> "$ENV_FILE"
+    fi
+    echo "已生成 TOTP_ENCRYPTION_KEY 到 $ENV_FILE"
+else
+    echo "$ENV_FILE 已存在 TOTP_ENCRYPTION_KEY，保留不变"
+fi
+
+# 确保 systemd unit 带 EnvironmentFile
+if [ -f "$UNIT" ] && ! grep -q '^EnvironmentFile=.*\.env' "$UNIT"; then
+    sed -i '/^Environment=SERVER_PORT=/a EnvironmentFile=-/opt/sub2api/.env' "$UNIT"
+    systemctl daemon-reload
+    echo "已向 $UNIT 追加 EnvironmentFile"
+fi
+SETUP_EOF
+    success "环境文件就绪（需重启服务才生效: systemctl restart $SERVICE_NAME）"
 }
 
 # ============================================================
@@ -214,6 +271,7 @@ usage() {
     echo "选项:"
     echo "  (无参数)       编译 + 部署 + 重启"
     echo "  --init         首次部署（含 systemd 配置）"
+    echo "  --setup-env    为已有服务器补齐 .env（生成 TOTP_ENCRYPTION_KEY）"
     echo "  --build-only   仅编译不部署"
     echo "  --skip-build   跳过编译，仅部署已有二进制"
     echo "  -h, --help     显示帮助"
@@ -226,10 +284,12 @@ main() {
     local do_build=true
     local do_deploy=true
     local do_init=false
+    local do_setup_env=false
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --init)       do_init=true; shift ;;
+            --setup-env)  do_setup_env=true; do_build=false; do_deploy=false; shift ;;
             --build-only) do_deploy=false; shift ;;
             --skip-build) do_build=false; shift ;;
             -h|--help)    usage; exit 0 ;;
@@ -251,6 +311,14 @@ main() {
     # 首次初始化
     if $do_init; then
         init_server
+    fi
+
+    # 仅补齐 env 文件
+    if $do_setup_env; then
+        setup_env
+        echo ""
+        success "setup-env 完成!"
+        return
     fi
 
     # 构建

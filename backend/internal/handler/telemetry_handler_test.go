@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -183,7 +184,7 @@ func TestTelemetryHandler_EvalFeatures_RealisticPayload(t *testing.T) {
 
 	cfg := &config.Config{Telemetry: config.TelemetryConfig{
 		Enabled:      true,
-		CanonicalEnv: config.TelemetryCanonicalEnvConfig{Version: "2.1.22"},
+		CanonicalEnv: config.TelemetryCanonicalEnvConfig{Version: claude.DefaultCLIVersion},
 	}}
 	handler := NewTelemetryHandler(
 		service.NewTelemetryRewriterService(cfg),
@@ -203,7 +204,7 @@ func TestTelemetryHandler_EvalFeatures_RealisticPayload(t *testing.T) {
 	body := rec.Body.String()
 	require.Contains(t, body, "tengu_enable_prompt_caching")
 	require.Contains(t, body, "tengu_version_config")
-	require.Contains(t, body, `"latestVersion":"2.1.22"`)
+	require.Contains(t, body, `"latestVersion":"`+claude.DefaultCLIVersion+`"`)
 	require.Equal(t, "no-store", rec.Header().Get("Cache-Control"))
 }
 

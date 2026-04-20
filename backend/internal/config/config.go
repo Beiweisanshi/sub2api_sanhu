@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 )
 
 const (
@@ -1611,8 +1613,8 @@ func setDefaults() {
 	viper.SetDefault("telemetry.canonical_env.runtimes", "node,bun")
 	viper.SetDefault("telemetry.canonical_env.is_running_with_bun", false)
 	viper.SetDefault("telemetry.canonical_env.is_claude_ai_auth", true)
-	viper.SetDefault("telemetry.canonical_env.version", "2.1.22")
-	viper.SetDefault("telemetry.canonical_env.version_base", "2.1.22")
+	viper.SetDefault("telemetry.canonical_env.version", claude.DefaultCLIVersion)
+	viper.SetDefault("telemetry.canonical_env.version_base", claude.DefaultCLIVersion)
 	viper.SetDefault("telemetry.canonical_env.build_time", "2025-06-01T00:00:00Z")
 	viper.SetDefault("telemetry.canonical_env.deployment_environment", "production")
 	viper.SetDefault("telemetry.canonical_env.vcs", "git")

@@ -1820,6 +1820,42 @@ func (a *Account) GetWindowCostLimit() float64 {
 	return 0
 }
 
+// GetUsagePercentLimit 获取账号 5h 窗口用量百分比限制（0-100）
+// 返回 0 表示未启用
+func (a *Account) GetUsagePercentLimit() float64 {
+	if a.Extra == nil {
+		return 0
+	}
+	if v, ok := a.Extra["usage_percent_limit"]; ok {
+		return parseExtraFloat64(v)
+	}
+	return 0
+}
+
+// GetPassiveUsagePercent 从 Extra 读取被动采样的 5h 窗口用量百分比
+// 返回 (百分比 0-100, 是否存在)
+func (a *Account) GetPassiveUsagePercent() (float64, bool) {
+	if a.Extra == nil {
+		return 0, false
+	}
+	if a.SessionWindowEnd != nil && !time.Now().Before(*a.SessionWindowEnd) {
+		return 0, false
+	}
+	v, ok := a.Extra["session_window_utilization"]
+	if !ok {
+		return 0, false
+	}
+	switch val := v.(type) {
+	case float64:
+		return val * 100, true
+	case json.Number:
+		if f, err := val.Float64(); err == nil {
+			return f * 100, true
+		}
+	}
+	return 0, false
+}
+
 // GetWindowCostStickyReserve 获取粘性会话预留额度（美元）
 // 默认值为 10
 func (a *Account) GetWindowCostStickyReserve() float64 {

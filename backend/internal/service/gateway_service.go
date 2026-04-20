@@ -1488,6 +1488,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 				filteredWindowCost++
 				continue
 			}
+			if !s.isAccountSchedulableForUsagePercent(ctx, account, false) {
+				continue
+			}
 			// RPM 检查（非粘性会话路径）
 			if !s.isAccountSchedulableForRPM(ctx, account, false) {
 				continue
@@ -1518,7 +1521,8 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 							(requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, stickyAccount, requestedModel)) &&
 							s.isAccountSchedulableForModelSelection(ctx, stickyAccount, requestedModel) &&
 							s.isAccountSchedulableForQuota(stickyAccount) &&
-							s.isAccountSchedulableForWindowCost(ctx, stickyAccount, true)
+							s.isAccountSchedulableForWindowCost(ctx, stickyAccount, true) &&
+							s.isAccountSchedulableForUsagePercent(ctx, stickyAccount, true)
 
 						rpmPass := gatePass && s.isAccountSchedulableForRPM(ctx, stickyAccount, true)
 
@@ -1689,6 +1693,7 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 					s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) &&
 					s.isAccountSchedulableForQuota(account) &&
 					s.isAccountSchedulableForWindowCost(ctx, account, true) &&
+					s.isAccountSchedulableForUsagePercent(ctx, account, true) &&
 
 					s.isAccountSchedulableForRPM(ctx, account, true) { // 粘性会话窗口费用+RPM 检查
 					result, err := s.tryAcquireAccountSlot(ctx, accountID, account.Concurrency)
@@ -1751,6 +1756,9 @@ func (s *GatewayService) SelectAccountWithLoadAwareness(ctx context.Context, gro
 		}
 		// 窗口费用检查（非粘性会话路径）
 		if !s.isAccountSchedulableForWindowCost(ctx, acc, false) {
+			continue
+		}
+		if !s.isAccountSchedulableForUsagePercent(ctx, acc, false) {
 			continue
 		}
 		// RPM 检查（非粘性会话路径）
@@ -2374,6 +2382,26 @@ checkSchedulability:
 	return true
 }
 
+// isAccountSchedulableForUsagePercent 检查账号是否在 5h 窗口用量百分比限制内
+// 仅适用于 Anthropic OAuth/SetupToken 账号
+// 使用被动采样的 session_window_utilization（无数据时失败开放）
+func (s *GatewayService) isAccountSchedulableForUsagePercent(ctx context.Context, account *Account, isSticky bool) bool {
+	_ = ctx
+	_ = isSticky
+	if !account.IsAnthropicOAuthOrSetupToken() {
+		return true
+	}
+	limit := account.GetUsagePercentLimit()
+	if limit <= 0 {
+		return true
+	}
+	usage, ok := account.GetPassiveUsagePercent()
+	if !ok {
+		return true
+	}
+	return usage < limit
+}
+
 // rpmPrefetchContextKey is the context key for prefetched RPM counts.
 type rpmPrefetchContextKeyType struct{}
 
@@ -2844,7 +2872,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 						if clearSticky {
 							_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 						}
-						if !clearSticky && s.isAccountInGroup(account, groupID) && account.Platform == platform && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) && !s.isStickyAccountUpstreamRestricted(ctx, groupID, account, requestedModel) {
+						if !clearSticky && s.isAccountInGroup(account, groupID) && account.Platform == platform && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForUsagePercent(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) && !s.isStickyAccountUpstreamRestricted(ctx, groupID, account, requestedModel) {
 							if s.debugModelRoutingEnabled() {
 								logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] legacy routed sticky hit: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), accountID)
 							}
@@ -2910,6 +2938,9 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			if !s.isAccountSchedulableForWindowCost(ctx, acc, false) {
 				continue
 			}
+			if !s.isAccountSchedulableForUsagePercent(ctx, acc, false) {
+				continue
+			}
 			if !s.isAccountSchedulableForRPM(ctx, acc, false) {
 				continue
 			}
@@ -2963,7 +2994,7 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 					if clearSticky {
 						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 					}
-					if !clearSticky && s.isAccountInGroup(account, groupID) && account.Platform == platform && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) {
+					if !clearSticky && s.isAccountInGroup(account, groupID) && account.Platform == platform && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForUsagePercent(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) {
 						return account, nil
 					}
 				}
@@ -3022,6 +3053,9 @@ func (s *GatewayService) selectAccountForModelWithPlatform(ctx context.Context, 
 			continue
 		}
 		if !s.isAccountSchedulableForWindowCost(ctx, acc, false) {
+			continue
+		}
+		if !s.isAccountSchedulableForUsagePercent(ctx, acc, false) {
 			continue
 		}
 		if !s.isAccountSchedulableForRPM(ctx, acc, false) {
@@ -3102,7 +3136,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 						if clearSticky {
 							_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 						}
-						if !clearSticky && s.isAccountInGroup(account, groupID) && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) {
+						if !clearSticky && s.isAccountInGroup(account, groupID) && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForUsagePercent(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) {
 							if account.Platform == nativePlatform || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
 								if s.debugModelRoutingEnabled() {
 									logger.LegacyPrintf("service.gateway", "[ModelRoutingDebug] legacy mixed routed sticky hit: group_id=%v model=%s session=%s account=%d", derefGroupID(groupID), requestedModel, shortSessionHash(sessionHash), accountID)
@@ -3170,6 +3204,9 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 			if !s.isAccountSchedulableForWindowCost(ctx, acc, false) {
 				continue
 			}
+			if !s.isAccountSchedulableForUsagePercent(ctx, acc, false) {
+				continue
+			}
 			if !s.isAccountSchedulableForRPM(ctx, acc, false) {
 				continue
 			}
@@ -3223,7 +3260,7 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 					if clearSticky {
 						_ = s.cache.DeleteSessionAccountID(ctx, derefGroupID(groupID), sessionHash)
 					}
-					if !clearSticky && s.isAccountInGroup(account, groupID) && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) && !s.isStickyAccountUpstreamRestricted(ctx, groupID, account, requestedModel) {
+					if !clearSticky && s.isAccountInGroup(account, groupID) && (requestedModel == "" || s.isModelSupportedByAccountWithContext(ctx, account, requestedModel)) && s.isAccountSchedulableForModelSelection(ctx, account, requestedModel) && s.isAccountSchedulableForQuota(account) && s.isAccountSchedulableForWindowCost(ctx, account, true) && s.isAccountSchedulableForUsagePercent(ctx, account, true) && s.isAccountSchedulableForRPM(ctx, account, true) && !s.isStickyAccountUpstreamRestricted(ctx, groupID, account, requestedModel) {
 						if account.Platform == nativePlatform || (account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled()) {
 							return account, nil
 						}
@@ -3283,6 +3320,9 @@ func (s *GatewayService) selectAccountWithMixedScheduling(ctx context.Context, g
 			continue
 		}
 		if !s.isAccountSchedulableForWindowCost(ctx, acc, false) {
+			continue
+		}
+		if !s.isAccountSchedulableForUsagePercent(ctx, acc, false) {
 			continue
 		}
 		if !s.isAccountSchedulableForRPM(ctx, acc, false) {
@@ -4925,7 +4965,7 @@ func (s *GatewayService) handleStreamingResponseAnthropicAPIKeyPassthrough(
 		s.rateLimitService.UpdateSessionWindow(ctx, account, resp.Header)
 	}
 
-	writeAllUpstreamResponseHeaders(c.Writer.Header(), resp.Header)
+	writeAllUpstreamResponseHeaders(c.Writer.Header(), resp.Header, s.shouldStripGatewayResponseHeaders(ctx))
 
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if contentType == "" {
@@ -5221,7 +5261,7 @@ func (s *GatewayService) handleNonStreamingResponseAnthropicAPIKeyPassthrough(
 
 	usage := parseClaudeUsageFromResponseBody(body)
 
-	writeAllUpstreamResponseHeaders(c.Writer.Header(), resp.Header)
+	writeAllUpstreamResponseHeaders(c.Writer.Header(), resp.Header, s.shouldStripGatewayResponseHeaders(ctx))
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if contentType == "" {
 		contentType = "application/json"
@@ -5260,11 +5300,13 @@ var responseBlockedHeaders = map[string]bool{
 	"content-length":    true,
 }
 
-// writeAllUpstreamResponseHeaders 透传模式：上游响应头原样回写，仅跳过 hop-by-hop 头部
-// 和已知 AI 网关指纹前缀（LiteLLM/Helicone/Portkey/Cloudflare AI Gateway/Kong/
-// BentoML）。指纹前缀一旦泄漏到 Claude Code CLI，客户端会通过 Datadog/BigQuery
-// 上报「gateway detected」，直接把账号和代理绑定。
-func writeAllUpstreamResponseHeaders(dst http.Header, src http.Header) {
+// writeAllUpstreamResponseHeaders 透传模式：上游响应头原样回写，仅跳过 hop-by-hop 头部。
+// stripGatewayFingerprint == true 时（默认行为）会额外剥离常见 AI gateway 指纹前缀
+// （cf-aig-*、x-portkey-* 等）——这是 enable_response_header_strip 设置的主要生效点。
+// 指纹前缀一旦泄漏到 Claude Code CLI，客户端会通过 Datadog/BigQuery 上报
+// 「gateway detected」，直接把账号和代理绑定；运维需要调试 / 兼容某个 gateway
+// 时可以通过设置关闭该剥离。
+func writeAllUpstreamResponseHeaders(dst http.Header, src http.Header, stripGatewayFingerprint bool) {
 	if dst == nil || src == nil {
 		return
 	}
@@ -5273,7 +5315,7 @@ func writeAllUpstreamResponseHeaders(dst http.Header, src http.Header) {
 		if responseBlockedHeaders[lower] {
 			continue
 		}
-		if responseheaders.HasGatewayFingerprintPrefix(lower) {
+		if stripGatewayFingerprint && responseheaders.HasGatewayFingerprintPrefix(lower) {
 			continue
 		}
 		for _, v := range values {
@@ -5700,8 +5742,10 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 
 	// 应用 Claude Code body 级身份加固：env/system-reminder 清洗 →
 	// cc_version 真指纹 → billing header 同步/注入 → CCH 签名。全部受
-	// GatewayForwardingSettings 开关控制。
-	body = applyClaudeCodeBodyRewrites(body, s.cfg, fingerprint, forwardingSettings)
+	// GatewayForwardingSettings 开关控制。effectiveCLIVersion 必须与最终
+	// 发往上游的 User-Agent 版本一致，否则 billing cc_version 会漂移。
+	effectiveCLIVersion := s.resolveEffectiveCLIVersion(tokenType, mimicClaudeCode, fingerprint)
+	body = applyClaudeCodeBodyRewrites(body, s.cfg, effectiveCLIVersion, forwardingSettings)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -5884,6 +5928,44 @@ func defaultAPIKeyBetaHeader(body []byte) string {
 		return claude.APIKeyHaikuBetaHeader
 	}
 	return claude.APIKeyBetaHeader
+}
+
+// shouldStripGatewayResponseHeaders 读取 enable_response_header_strip 设置，
+// 决定 writeAllUpstreamResponseHeaders 是否剥离 gateway 指纹前缀。默认 true。
+func (s *GatewayService) shouldStripGatewayResponseHeaders(ctx context.Context) bool {
+	if s == nil || s.settingService == nil {
+		return defaultGatewayForwardingSettings().ResponseHeaderStrip
+	}
+	return s.settingService.GetGatewayForwardingSettings(ctx).ResponseHeaderStrip
+}
+
+// resolveEffectiveCLIVersion 推断最终发往上游的 claude-cli 版本号。
+//
+// 头部构造顺序（见 buildUpstreamRequest）：
+//  1. applyFingerprint 写入 fingerprint.UserAgent（若非空）
+//  2. applyClaudeOAuthHeaderDefaults 对 oauth 账号在 UA 缺失时补上
+//     claudeClientHeaders()["User-Agent"]
+//  3. applyClaudeCodeMimicHeaders（mimic 路径）无条件覆写为
+//     claudeClientHeaders()["User-Agent"]
+//
+// 因此：
+//   - mimic 模式 → 必定是 claudeClientHeaders 的版本
+//   - 非 mimic + 有 fingerprint.UA → fingerprint UA 的版本
+//   - 非 mimic + 无 fingerprint.UA + oauth → claudeClientHeaders 的版本
+//   - 其他（api-key 透传等）→ 无从得知，返回空让 body rewriter 跳过注入
+func (s *GatewayService) resolveEffectiveCLIVersion(tokenType string, mimicClaudeCode bool, fingerprint *Fingerprint) string {
+	if mimicClaudeCode {
+		return ExtractCLIVersion(s.claudeClientHeaders()["User-Agent"])
+	}
+	if fingerprint != nil {
+		if v := ExtractCLIVersion(fingerprint.UserAgent); v != "" {
+			return v
+		}
+	}
+	if tokenType == "oauth" {
+		return ExtractCLIVersion(s.claudeClientHeaders()["User-Agent"])
+	}
+	return ""
 }
 
 // claudeClientHeaders 解析生效的 Claude CLI 客户端默认请求头。
@@ -6766,7 +6848,7 @@ func (s *GatewayService) handlePassthroughErrorResponse(ctx context.Context, res
 		account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(body), 1000))
 
 	// 原样透传：上游 status + headers + body
-	writeAllUpstreamResponseHeaders(c.Writer.Header(), resp.Header)
+	writeAllUpstreamResponseHeaders(c.Writer.Header(), resp.Header, s.shouldStripGatewayResponseHeaders(ctx))
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if contentType == "" {
 		contentType = "application/json"
@@ -8644,7 +8726,7 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 		// 透传模式：原样转发上游错误 body
 		logger.LegacyPrintf("service.gateway", "[count_tokens passthrough] Upstream error: Account=%d(%s) Status=%d RequestID=%s Body=%s",
 			account.ID, account.Name, resp.StatusCode, resp.Header.Get("x-request-id"), truncateString(string(respBody), 1000))
-		writeAllUpstreamResponseHeaders(c.Writer.Header(), resp.Header)
+		writeAllUpstreamResponseHeaders(c.Writer.Header(), resp.Header, s.shouldStripGatewayResponseHeaders(ctx))
 		ct := strings.TrimSpace(resp.Header.Get("Content-Type"))
 		if ct == "" {
 			ct = "application/json"
@@ -8656,7 +8738,7 @@ func (s *GatewayService) forwardCountTokensAnthropicAPIKeyPassthrough(ctx contex
 		return fmt.Errorf("upstream error: %d message=%s", resp.StatusCode, upstreamMsg)
 	}
 
-	writeAllUpstreamResponseHeaders(c.Writer.Header(), resp.Header)
+	writeAllUpstreamResponseHeaders(c.Writer.Header(), resp.Header, s.shouldStripGatewayResponseHeaders(ctx))
 	contentType := strings.TrimSpace(resp.Header.Get("Content-Type"))
 	if contentType == "" {
 		contentType = "application/json"
@@ -8776,7 +8858,8 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	if !ctEnableFP {
 		ctFPToApply = nil
 	}
-	body = applyClaudeCodeBodyRewrites(body, s.cfg, ctFPToApply, ctForwardingSettings)
+	ctEffectiveCLIVersion := s.resolveEffectiveCLIVersion(tokenType, mimicClaudeCode, ctFPToApply)
+	body = applyClaudeCodeBodyRewrites(body, s.cfg, ctEffectiveCLIVersion, ctForwardingSettings)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {

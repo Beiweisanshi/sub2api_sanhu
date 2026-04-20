@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -58,7 +59,7 @@ func (h *TelemetryHandler) EvalFeatures(c *gin.Context) {
 	}
 	version := strings.TrimSpace(h.cfg.Telemetry.CanonicalEnv.Version)
 	if version == "" {
-		version = "2.1.22"
+		version = claude.DefaultCLIVersion
 	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gin.H{

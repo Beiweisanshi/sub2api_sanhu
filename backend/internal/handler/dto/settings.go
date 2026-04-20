@@ -130,6 +130,10 @@ type SystemSettings struct {
 	EnableSystemReminderScrub    bool `json:"enable_system_reminder_scrub"`
 	EnableBillingInject          bool `json:"enable_billing_inject"`
 	EnableCCFingerprintV2        bool `json:"enable_cc_fingerprint_v2"`
+	EnableResponseHeaderStrip    bool `json:"enable_response_header_strip"`
+	EnableRemoteHeaderStrip      bool `json:"enable_remote_header_strip"`
+	EnableStrictValidator        bool `json:"enable_strict_validator"`
+	EnableTelemetryHeartbeat     bool `json:"enable_telemetry_heartbeat"`
 
 	// Web Search Emulation
 	WebSearchEmulationEnabled bool `json:"web_search_emulation_enabled"`

@@ -179,6 +179,10 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		EnableSystemReminderScrub:            settings.EnableSystemReminderScrub,
 		EnableBillingInject:                  settings.EnableBillingInject,
 		EnableCCFingerprintV2:                settings.EnableCCFingerprintV2,
+		EnableResponseHeaderStrip:            settings.EnableResponseHeaderStrip,
+		EnableRemoteHeaderStrip:              settings.EnableRemoteHeaderStrip,
+		EnableStrictValidator:                settings.EnableStrictValidator,
+		EnableTelemetryHeartbeat:             settings.EnableTelemetryHeartbeat,
 		WebSearchEmulationEnabled:            settings.WebSearchEmulationEnabled,
 		BalanceLowNotifyEnabled:              settings.BalanceLowNotifyEnabled,
 		BalanceLowNotifyThreshold:            settings.BalanceLowNotifyThreshold,
@@ -322,6 +326,10 @@ type UpdateSettingsRequest struct {
 	EnableSystemReminderScrub    *bool `json:"enable_system_reminder_scrub"`
 	EnableBillingInject          *bool `json:"enable_billing_inject"`
 	EnableCCFingerprintV2        *bool `json:"enable_cc_fingerprint_v2"`
+	EnableResponseHeaderStrip    *bool `json:"enable_response_header_strip"`
+	EnableRemoteHeaderStrip      *bool `json:"enable_remote_header_strip"`
+	EnableStrictValidator        *bool `json:"enable_strict_validator"`
+	EnableTelemetryHeartbeat     *bool `json:"enable_telemetry_heartbeat"`
 
 	// Balance low notification
 	BalanceLowNotifyEnabled     *bool                   `json:"balance_low_notify_enabled"`
@@ -939,6 +947,30 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.EnableCCFingerprintV2
 		}(),
+		EnableResponseHeaderStrip: func() bool {
+			if req.EnableResponseHeaderStrip != nil {
+				return *req.EnableResponseHeaderStrip
+			}
+			return previousSettings.EnableResponseHeaderStrip
+		}(),
+		EnableRemoteHeaderStrip: func() bool {
+			if req.EnableRemoteHeaderStrip != nil {
+				return *req.EnableRemoteHeaderStrip
+			}
+			return previousSettings.EnableRemoteHeaderStrip
+		}(),
+		EnableStrictValidator: func() bool {
+			if req.EnableStrictValidator != nil {
+				return *req.EnableStrictValidator
+			}
+			return previousSettings.EnableStrictValidator
+		}(),
+		EnableTelemetryHeartbeat: func() bool {
+			if req.EnableTelemetryHeartbeat != nil {
+				return *req.EnableTelemetryHeartbeat
+			}
+			return previousSettings.EnableTelemetryHeartbeat
+		}(),
 		BalanceLowNotifyEnabled: func() bool {
 			if req.BalanceLowNotifyEnabled != nil {
 				return *req.BalanceLowNotifyEnabled
@@ -1122,6 +1154,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		EnableSystemReminderScrub:            updatedSettings.EnableSystemReminderScrub,
 		EnableBillingInject:                  updatedSettings.EnableBillingInject,
 		EnableCCFingerprintV2:                updatedSettings.EnableCCFingerprintV2,
+		EnableResponseHeaderStrip:            updatedSettings.EnableResponseHeaderStrip,
+		EnableRemoteHeaderStrip:              updatedSettings.EnableRemoteHeaderStrip,
+		EnableStrictValidator:                updatedSettings.EnableStrictValidator,
+		EnableTelemetryHeartbeat:             updatedSettings.EnableTelemetryHeartbeat,
 		BalanceLowNotifyEnabled:              updatedSettings.BalanceLowNotifyEnabled,
 		BalanceLowNotifyThreshold:            updatedSettings.BalanceLowNotifyThreshold,
 		BalanceLowNotifyRechargeURL:          updatedSettings.BalanceLowNotifyRechargeURL,
@@ -1437,6 +1473,18 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.EnableCCFingerprintV2 != after.EnableCCFingerprintV2 {
 		changed = append(changed, "enable_cc_fingerprint_v2")
+	}
+	if before.EnableResponseHeaderStrip != after.EnableResponseHeaderStrip {
+		changed = append(changed, "enable_response_header_strip")
+	}
+	if before.EnableRemoteHeaderStrip != after.EnableRemoteHeaderStrip {
+		changed = append(changed, "enable_remote_header_strip")
+	}
+	if before.EnableStrictValidator != after.EnableStrictValidator {
+		changed = append(changed, "enable_strict_validator")
+	}
+	if before.EnableTelemetryHeartbeat != after.EnableTelemetryHeartbeat {
+		changed = append(changed, "enable_telemetry_heartbeat")
 	}
 	// Balance & quota notification
 	if before.BalanceLowNotifyEnabled != after.BalanceLowNotifyEnabled {

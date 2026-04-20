@@ -30,6 +30,9 @@ func scrubTestFingerprint() *Fingerprint {
 	}
 }
 
+// scrubTestCLIVersion 与 scrubTestFingerprint.UserAgent 保持一致。
+const scrubTestCLIVersion = "2.1.22"
+
 func TestApplyClaudeCodeBodyRewrites_FullPipeline(t *testing.T) {
 	body := []byte(`{
 		"system":[{"type":"text","text":"Platform: linux\nShell: bash\nWorking directory: /home/bob/code"}],
@@ -38,7 +41,7 @@ func TestApplyClaudeCodeBodyRewrites_FullPipeline(t *testing.T) {
 	fw := defaultGatewayForwardingSettings()
 	fw.CCHSigning = true // verify CCH path too
 
-	out := applyClaudeCodeBodyRewrites(body, scrubTestConfig(), scrubTestFingerprint(), fw)
+	out := applyClaudeCodeBodyRewrites(body, scrubTestConfig(), scrubTestCLIVersion, fw)
 
 	// Env block scrubbed.
 	envText := gjson.GetBytes(out, "system.#(text%\"Platform:*\").text").String()
@@ -60,21 +63,36 @@ func TestApplyClaudeCodeBodyRewrites_BillingInjectOffLeavesMissing(t *testing.T)
 	fw := defaultGatewayForwardingSettings()
 	fw.BillingInject = false
 
-	out := applyClaudeCodeBodyRewrites(body, scrubTestConfig(), scrubTestFingerprint(), fw)
+	out := applyClaudeCodeBodyRewrites(body, scrubTestConfig(), scrubTestCLIVersion, fw)
 
 	assert.False(t, hasBillingHeader(out))
 }
 
-func TestApplyClaudeCodeBodyRewrites_NoFingerprintSkipsEverything(t *testing.T) {
+func TestApplyClaudeCodeBodyRewrites_NoFingerprintWithCLIVersionStillHardens(t *testing.T) {
+	// fingerprint==nil 代表 OAuth 指纹统一关闭（或非 OAuth 账号），但只要调用方
+	// 给出了 effectiveCLIVersion，body 级硬加固仍需执行 —— 这些操作（env/
+	// system-reminder 清洗、billing 注入）与指纹伪装解耦。
 	body := []byte(`{"system":[{"type":"text","text":"Platform: linux"}],"messages":[{"role":"user","content":"hi"}]}`)
 	fw := defaultGatewayForwardingSettings()
 
-	out := applyClaudeCodeBodyRewrites(body, scrubTestConfig(), nil, fw)
+	out := applyClaudeCodeBodyRewrites(body, scrubTestConfig(), scrubTestCLIVersion, fw)
 
-	// Non-OAuth path: body must pass through byte-for-byte — neither prompt
-	// scrubbing nor billing injection applies when there's no fingerprint to
-	// impersonate (API Key / Bedrock / third-party relay callers).
-	assert.JSONEq(t, string(body), string(out))
+	// env 被清洗成配置里的伪值，billing 块被注入。
+	envText := gjson.GetBytes(out, "system.#(text%\"Platform:*\").text").String()
+	require.Contains(t, envText, "Platform: darwin")
+	assert.True(t, hasBillingHeader(out))
+}
+
+func TestApplyClaudeCodeBodyRewrites_NoCLIVersionSkipsBilling(t *testing.T) {
+	// 无法推断出效 CLI 版本时（api-key 透传等），billing 注入/同步应当跳过，
+	// 但 prompt 清洗仍然运行 —— 这些字段不依赖 CLI 版本。
+	body := []byte(`{"system":[{"type":"text","text":"Platform: linux"}],"messages":[{"role":"user","content":"hi"}]}`)
+	fw := defaultGatewayForwardingSettings()
+
+	out := applyClaudeCodeBodyRewrites(body, scrubTestConfig(), "", fw)
+
+	envText := gjson.GetBytes(out, "system.#(text%\"Platform:*\").text").String()
+	require.Contains(t, envText, "Platform: darwin")
 	assert.False(t, hasBillingHeader(out))
 }
 
@@ -85,8 +103,8 @@ func TestApplyClaudeCodeBodyRewrites_V2OffPreservesUpstreamCCVersion(t *testing.
 	fw := defaultGatewayForwardingSettings()
 	fw.CCFingerprintV2 = false
 
-	a := applyClaudeCodeBodyRewrites(body, scrubTestConfig(), scrubTestFingerprint(), fw)
-	b := applyClaudeCodeBodyRewrites(body, scrubTestConfig(), scrubTestFingerprint(), fw)
+	a := applyClaudeCodeBodyRewrites(body, scrubTestConfig(), scrubTestCLIVersion, fw)
+	b := applyClaudeCodeBodyRewrites(body, scrubTestConfig(), scrubTestCLIVersion, fw)
 
 	// cc_version suffix on the existing billing header is left untouched, and
 	// two identical inputs produce identical outputs (no randomness).
@@ -102,7 +120,7 @@ func TestApplyClaudeCodeBodyRewrites_V2OffStableInjectedSuffix(t *testing.T) {
 	fw.CCFingerprintV2 = false
 	fw.CCHSigning = false
 
-	out := applyClaudeCodeBodyRewrites(body, scrubTestConfig(), scrubTestFingerprint(), fw)
+	out := applyClaudeCodeBodyRewrites(body, scrubTestConfig(), scrubTestCLIVersion, fw)
 	billing := gjson.GetBytes(out, "system.0.text").String()
 	require.Contains(t, billing, "cc_version=2.1.22.000;")
 }
@@ -111,7 +129,7 @@ func TestApplyClaudeCodeBodyRewrites_AllOffPassesThrough(t *testing.T) {
 	body := []byte(`{"system":[{"type":"text","text":"Platform: linux"}],"messages":[{"role":"user","content":"hi"}]}`)
 	fw := GatewayForwardingSettings{} // every knob off
 
-	out := applyClaudeCodeBodyRewrites(body, scrubTestConfig(), scrubTestFingerprint(), fw)
+	out := applyClaudeCodeBodyRewrites(body, scrubTestConfig(), scrubTestCLIVersion, fw)
 
 	assert.JSONEq(t, string(body), string(out))
 }
@@ -120,8 +138,8 @@ func TestApplyClaudeCodeBodyRewrites_FingerprintV2DeterministicAcrossCalls(t *te
 	body := []byte(`{"system":[],"messages":[{"role":"user","content":"consistent first message for fingerprint"}]}`)
 	fw := defaultGatewayForwardingSettings()
 
-	a := applyClaudeCodeBodyRewrites(body, scrubTestConfig(), scrubTestFingerprint(), fw)
-	b := applyClaudeCodeBodyRewrites(body, scrubTestConfig(), scrubTestFingerprint(), fw)
+	a := applyClaudeCodeBodyRewrites(body, scrubTestConfig(), scrubTestCLIVersion, fw)
+	b := applyClaudeCodeBodyRewrites(body, scrubTestConfig(), scrubTestCLIVersion, fw)
 
 	// Billing was injected; suffix must be stable across identical inputs.
 	billA := gjson.GetBytes(a, "system.0.text").String()
@@ -130,6 +148,6 @@ func TestApplyClaudeCodeBodyRewrites_FingerprintV2DeterministicAcrossCalls(t *te
 }
 
 func TestApplyClaudeCodeBodyRewrites_EmptyBody(t *testing.T) {
-	got := applyClaudeCodeBodyRewrites(nil, scrubTestConfig(), scrubTestFingerprint(), defaultGatewayForwardingSettings())
+	got := applyClaudeCodeBodyRewrites(nil, scrubTestConfig(), scrubTestCLIVersion, defaultGatewayForwardingSettings())
 	assert.Nil(t, got)
 }
