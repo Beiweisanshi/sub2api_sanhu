@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -25,15 +26,20 @@ var (
 )
 
 // 默认指纹值（当客户端未提供时使用）
-var defaultFingerprint = Fingerprint{
-	UserAgent:               "claude-cli/2.1.22 (external, cli)",
-	StainlessLang:           "js",
-	StainlessPackageVersion: "0.70.0",
-	StainlessOS:             "Linux",
-	StainlessArch:           "arm64",
-	StainlessRuntime:        "node",
-	StainlessRuntimeVersion: "v24.13.0",
-}
+// 与 claude.DefaultHeaders 保持单一来源，避免 cch / billing 已升级到
+// 新版本时，身份缓存回退值仍停留在旧的 CLI 指纹。
+var defaultFingerprint = func() Fingerprint {
+	headers := claude.BuildDefaultHeaders(claude.ClientHeaderConfig{})
+	return Fingerprint{
+		UserAgent:               headers["User-Agent"],
+		StainlessLang:           headers["X-Stainless-Lang"],
+		StainlessPackageVersion: headers["X-Stainless-Package-Version"],
+		StainlessOS:             headers["X-Stainless-OS"],
+		StainlessArch:           headers["X-Stainless-Arch"],
+		StainlessRuntime:        headers["X-Stainless-Runtime"],
+		StainlessRuntimeVersion: headers["X-Stainless-Runtime-Version"],
+	}
+}()
 
 // Fingerprint represents account fingerprint data
 type Fingerprint struct {

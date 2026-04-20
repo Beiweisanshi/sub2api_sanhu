@@ -41,6 +41,31 @@ var hopByHopHeaders = map[string]struct{}{
 	"connection":        {},
 }
 
+// GatewayFingerprintPrefixes 是常见 AI 网关/反代在响应头里植入的前缀。
+// Claude Code CLI 会扫这些前缀并通过 Datadog/BigQuery 上报「gateway detected」
+// 事件；一旦匹配上游就能把账号与代理挂钩。剥离方案由 defaultCompiledHeaderFilter
+// 默认启用（走白名单路径时这些前缀本来就不在 allowed 里，保持一致）。
+var GatewayFingerprintPrefixes = []string{
+	"x-litellm-",
+	"helicone-",
+	"x-portkey-",
+	"cf-aig-",
+	"x-kong-",
+	"x-bt-",
+}
+
+// HasGatewayFingerprintPrefix 返回 key 是否以上列任一已知 gateway 前缀开头。
+// 以小写形式比较；调用方无需先 ToLower。
+func HasGatewayFingerprintPrefix(key string) bool {
+	lower := strings.ToLower(key)
+	for _, prefix := range GatewayFingerprintPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 type CompiledHeaderFilter struct {
 	allowed     map[string]struct{}
 	forceRemove map[string]struct{}
@@ -98,6 +123,11 @@ func FilterHeaders(src http.Header, filter *CompiledHeaderFilter) http.Header {
 		}
 		// 跳过 hop-by-hop 头部，这些由 HTTP 库自动处理
 		if _, isHopByHop := hopByHopHeaders[lower]; isHopByHop {
+			continue
+		}
+		// 上游若经 LiteLLM/Helicone/Portkey 等反代，会附带 gateway 指纹头。
+		// 即便被误列入 additional_allowed，也在这一道强制剥离。
+		if HasGatewayFingerprintPrefix(lower) {
 			continue
 		}
 		for _, value := range values {

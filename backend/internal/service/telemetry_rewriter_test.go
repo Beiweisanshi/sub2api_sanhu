@@ -345,6 +345,79 @@ func TestRewriteEventBatch_CanonicalEnvFields(t *testing.T) {
 	require.False(t, env.Get("extra_field").Exists())
 }
 
+func TestRewriteEventBatch_CanonicalHostnameFromWorkingDir(t *testing.T) {
+	cfg := newTestTelemetryConfig()
+	cfg.Telemetry.PromptEnv = config.TelemetryPromptEnvConfig{WorkingDir: "/Users/alice/project"}
+	cfg.Telemetry.LeakFields = nil // ensure hostname is not deleted before rewrite
+	svc := NewTelemetryRewriterService(cfg)
+
+	body := []byte(`{"events":[{"event_data":{"hostname":"real.localdomain"}}]}`)
+	out, err := svc.RewriteEventBatch(body)
+	require.NoError(t, err)
+	require.Equal(t, "alice", gjson.GetBytes(out, "events.0.event_data.hostname").String())
+}
+
+func TestRewriteEventBatch_CanonicalHostnameFallback(t *testing.T) {
+	cfg := newTestTelemetryConfig()
+	cfg.Telemetry.PromptEnv = config.TelemetryPromptEnvConfig{}
+	cfg.Telemetry.LeakFields = nil
+	svc := NewTelemetryRewriterService(cfg)
+
+	body := []byte(`{"events":[{"event_data":{"hostname":"real.host"}}]}`)
+	out, err := svc.RewriteEventBatch(body)
+	require.NoError(t, err)
+	got := gjson.GetBytes(out, "events.0.event_data.hostname").String()
+	require.Regexp(t, `^mac-[0-9a-f]{8}$`, got)
+}
+
+func TestRewriteEventBatch_CanonicalSessionIDStableAndUUID(t *testing.T) {
+	cfg := newTestTelemetryConfig()
+	cfg.Telemetry.LeakFields = nil
+	svc := NewTelemetryRewriterService(cfg)
+
+	body := []byte(`{"events":[{"event_data":{"session_id":"real-session-uuid"}},{"event_data":{"session_id":"another-real"}}]}`)
+	out, err := svc.RewriteEventBatch(body)
+	require.NoError(t, err)
+
+	a := gjson.GetBytes(out, "events.0.event_data.session_id").String()
+	b := gjson.GetBytes(out, "events.1.event_data.session_id").String()
+	require.Equal(t, a, b, "same identity must produce the same canonical session_id")
+	require.Regexp(t, `^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`, a)
+}
+
+func TestRewriteEventBatch_LinkageLeakFieldsDeleted(t *testing.T) {
+	cfg := newTestTelemetryConfig()
+	cfg.Telemetry.LeakFields = []string{"rh", "repo_hash", "machineId", "machine_id", "stable_id", "anonymousId", "user_metadata", "event_metadata"}
+	svc := NewTelemetryRewriterService(cfg)
+
+	body := []byte(`{"events":[{"event_data":{
+		"rh":"abc","repo_hash":"def","machineId":"m1","machine_id":"m2",
+		"stable_id":"s","anonymousId":"a",
+		"user_metadata":{"x":1},"event_metadata":{"y":2}
+	}}]}`)
+	out, err := svc.RewriteEventBatch(body)
+	require.NoError(t, err)
+
+	for _, field := range []string{"rh", "repo_hash", "machineId", "machine_id", "stable_id", "anonymousId", "user_metadata", "event_metadata"} {
+		require.False(t, gjson.GetBytes(out, "events.0.event_data."+field).Exists(), field+" should be stripped")
+	}
+}
+
+func TestRewriteEventBatch_HostnameRewrittenBeforeDeletion(t *testing.T) {
+	cfg := newTestTelemetryConfig()
+	cfg.Telemetry.PromptEnv = config.TelemetryPromptEnvConfig{WorkingDir: "/Users/alice/project"}
+	// hostname is NOT in leak_fields because we want it rewritten, not dropped.
+	cfg.Telemetry.LeakFields = []string{"machineId", "stable_id"}
+	svc := NewTelemetryRewriterService(cfg)
+
+	body := []byte(`{"events":[{"event_data":{"hostname":"real","machineId":"m","stable_id":"s"}}]}`)
+	out, err := svc.RewriteEventBatch(body)
+	require.NoError(t, err)
+	require.Equal(t, "alice", gjson.GetBytes(out, "events.0.event_data.hostname").String())
+	require.False(t, gjson.GetBytes(out, "events.0.event_data.machineId").Exists())
+	require.False(t, gjson.GetBytes(out, "events.0.event_data.stable_id").Exists())
+}
+
 func TestRandomInRange(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		v := randomInRange(10, 20)

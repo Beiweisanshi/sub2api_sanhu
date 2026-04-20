@@ -14,6 +14,9 @@ import (
 // GatewayService 隐式实现此接口。
 type TempUnscheduler interface {
 	TempUnscheduleRetryableError(ctx context.Context, accountID int64, failoverErr *service.UpstreamFailoverError)
+	// ApplyShortSwitchCooldown 换号时给旧账号加一个短期冷却（默认 30s），
+	// 防止并发请求立即又选到它。若已有更长冷却则保留。
+	ApplyShortSwitchCooldown(ctx context.Context, accountID int64)
 }
 
 // FailoverAction 表示 failover 错误处理后的下一步动作
@@ -109,6 +112,10 @@ func (s *FailoverState) HandleFailoverError(
 
 	// 加入失败列表
 	s.FailedAccountIDs[accountID] = struct{}{}
+
+	// 换号前给旧账号加一个短期冷却（默认 30s），防止并发请求立即又选到它。
+	// 对已有更长冷却（真实 429 reset / TempUnschedulable）的账号保持不变。
+	gatewayService.ApplyShortSwitchCooldown(ctx, accountID)
 
 	// 检查是否耗尽
 	if s.SwitchCount >= s.MaxSwitches {

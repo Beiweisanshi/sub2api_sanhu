@@ -14,9 +14,10 @@ import (
 // Mock
 // ---------------------------------------------------------------------------
 
-// mockTempUnscheduler 记录 TempUnscheduleRetryableError 的调用信息。
+// mockTempUnscheduler 记录 TempUnscheduleRetryableError 与 ApplyShortSwitchCooldown 的调用信息。
 type mockTempUnscheduler struct {
-	calls []tempUnscheduleCall
+	calls             []tempUnscheduleCall
+	shortCooldownIDs  []int64
 }
 
 type tempUnscheduleCall struct {
@@ -26,6 +27,10 @@ type tempUnscheduleCall struct {
 
 func (m *mockTempUnscheduler) TempUnscheduleRetryableError(_ context.Context, accountID int64, failoverErr *service.UpstreamFailoverError) {
 	m.calls = append(m.calls, tempUnscheduleCall{accountID: accountID, failoverErr: failoverErr})
+}
+
+func (m *mockTempUnscheduler) ApplyShortSwitchCooldown(_ context.Context, accountID int64) {
+	m.shortCooldownIDs = append(m.shortCooldownIDs, accountID)
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +146,7 @@ func TestHandleFailoverError_BasicSwitch(t *testing.T) {
 		require.Equal(t, err, fs.LastFailoverErr)
 		require.False(t, fs.ForceCacheBilling)
 		require.Empty(t, mock.calls, "不应调用 TempUnschedule")
+		require.Equal(t, []int64{100}, mock.shortCooldownIDs, "切换时应对旧账号加短期冷却")
 	})
 
 	t.Run("非重试错误_Antigravity_第一次切换无延迟", func(t *testing.T) {

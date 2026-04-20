@@ -175,6 +175,10 @@ func (h *SettingHandler) GetSettings(c *gin.Context) {
 		EnableFingerprintUnification:         settings.EnableFingerprintUnification,
 		EnableMetadataPassthrough:            settings.EnableMetadataPassthrough,
 		EnableCCHSigning:                     settings.EnableCCHSigning,
+		EnableEnvScrub:                       settings.EnableEnvScrub,
+		EnableSystemReminderScrub:            settings.EnableSystemReminderScrub,
+		EnableBillingInject:                  settings.EnableBillingInject,
+		EnableCCFingerprintV2:                settings.EnableCCFingerprintV2,
 		WebSearchEmulationEnabled:            settings.WebSearchEmulationEnabled,
 		BalanceLowNotifyEnabled:              settings.BalanceLowNotifyEnabled,
 		BalanceLowNotifyThreshold:            settings.BalanceLowNotifyThreshold,
@@ -314,6 +318,10 @@ type UpdateSettingsRequest struct {
 	EnableFingerprintUnification *bool `json:"enable_fingerprint_unification"`
 	EnableMetadataPassthrough    *bool `json:"enable_metadata_passthrough"`
 	EnableCCHSigning             *bool `json:"enable_cch_signing"`
+	EnableEnvScrub               *bool `json:"enable_env_scrub"`
+	EnableSystemReminderScrub    *bool `json:"enable_system_reminder_scrub"`
+	EnableBillingInject          *bool `json:"enable_billing_inject"`
+	EnableCCFingerprintV2        *bool `json:"enable_cc_fingerprint_v2"`
 
 	// Balance low notification
 	BalanceLowNotifyEnabled     *bool                   `json:"balance_low_notify_enabled"`
@@ -907,6 +915,30 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 			}
 			return previousSettings.EnableCCHSigning
 		}(),
+		EnableEnvScrub: func() bool {
+			if req.EnableEnvScrub != nil {
+				return *req.EnableEnvScrub
+			}
+			return previousSettings.EnableEnvScrub
+		}(),
+		EnableSystemReminderScrub: func() bool {
+			if req.EnableSystemReminderScrub != nil {
+				return *req.EnableSystemReminderScrub
+			}
+			return previousSettings.EnableSystemReminderScrub
+		}(),
+		EnableBillingInject: func() bool {
+			if req.EnableBillingInject != nil {
+				return *req.EnableBillingInject
+			}
+			return previousSettings.EnableBillingInject
+		}(),
+		EnableCCFingerprintV2: func() bool {
+			if req.EnableCCFingerprintV2 != nil {
+				return *req.EnableCCFingerprintV2
+			}
+			return previousSettings.EnableCCFingerprintV2
+		}(),
 		BalanceLowNotifyEnabled: func() bool {
 			if req.BalanceLowNotifyEnabled != nil {
 				return *req.BalanceLowNotifyEnabled
@@ -1086,6 +1118,10 @@ func (h *SettingHandler) UpdateSettings(c *gin.Context) {
 		EnableFingerprintUnification:         updatedSettings.EnableFingerprintUnification,
 		EnableMetadataPassthrough:            updatedSettings.EnableMetadataPassthrough,
 		EnableCCHSigning:                     updatedSettings.EnableCCHSigning,
+		EnableEnvScrub:                       updatedSettings.EnableEnvScrub,
+		EnableSystemReminderScrub:            updatedSettings.EnableSystemReminderScrub,
+		EnableBillingInject:                  updatedSettings.EnableBillingInject,
+		EnableCCFingerprintV2:                updatedSettings.EnableCCFingerprintV2,
 		BalanceLowNotifyEnabled:              updatedSettings.BalanceLowNotifyEnabled,
 		BalanceLowNotifyThreshold:            updatedSettings.BalanceLowNotifyThreshold,
 		BalanceLowNotifyRechargeURL:          updatedSettings.BalanceLowNotifyRechargeURL,
@@ -1389,6 +1425,18 @@ func diffSettings(before *service.SystemSettings, after *service.SystemSettings,
 	}
 	if before.EnableCCHSigning != after.EnableCCHSigning {
 		changed = append(changed, "enable_cch_signing")
+	}
+	if before.EnableEnvScrub != after.EnableEnvScrub {
+		changed = append(changed, "enable_env_scrub")
+	}
+	if before.EnableSystemReminderScrub != after.EnableSystemReminderScrub {
+		changed = append(changed, "enable_system_reminder_scrub")
+	}
+	if before.EnableBillingInject != after.EnableBillingInject {
+		changed = append(changed, "enable_billing_inject")
+	}
+	if before.EnableCCFingerprintV2 != after.EnableCCFingerprintV2 {
+		changed = append(changed, "enable_cc_fingerprint_v2")
 	}
 	// Balance & quota notification
 	if before.BalanceLowNotifyEnabled != after.BalanceLowNotifyEnabled {

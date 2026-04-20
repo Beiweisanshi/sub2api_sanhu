@@ -375,20 +375,47 @@ var allowedHeaders = map[string]bool{
 
 // passthroughBlockedHeaders 透传模式使用黑名单：除了这些 header 外全部转发。
 // 认证头（authorization, x-api-key, x-goog-api-key, cookie）在后续代码中也会删除（defense in depth）。
+// x-claude-remote-* 暴露 Claude Code 的远程/容器运行模式，会让上游把账号与
+// 共享基础设施关联，总是剥离而不受 RemoteHeaderStrip 开关影响。
 var passthroughBlockedHeaders = map[string]bool{
-	"authorization":       true,
-	"x-api-key":           true,
-	"x-goog-api-key":      true,
-	"cookie":              true,
-	"host":                true,
-	"connection":          true,
-	"keep-alive":          true,
-	"proxy-authorization": true,
-	"proxy-connection":    true,
-	"te":                  true,
-	"trailer":             true,
-	"transfer-encoding":   true,
-	"upgrade":             true,
+	"authorization":               true,
+	"x-api-key":                   true,
+	"x-goog-api-key":              true,
+	"cookie":                      true,
+	"host":                        true,
+	"connection":                  true,
+	"keep-alive":                  true,
+	"proxy-authorization":         true,
+	"proxy-connection":            true,
+	"te":                          true,
+	"trailer":                     true,
+	"transfer-encoding":           true,
+	"upgrade":                     true,
+	"x-claude-remote-container-id": true,
+	"x-claude-remote-session-id":   true,
+}
+
+// gatewayFingerprintHeaderPrefixes 常见 AI 网关/可观测性平台会注入的请求头前缀。
+// 透传模式下这些头会暴露"请求经由第三方网关"的特征，必须剥离。
+var gatewayFingerprintHeaderPrefixes = []string{
+	"x-litellm-",
+	"x-portkey-",
+	"x-openrouter-",
+	"helicone-",
+	"x-helicone-",
+	"x-langfuse-",
+	"x-honeycomb-",
+}
+
+// hasGatewayFingerprintHeaderPrefix 判断 lowerKey 是否匹配任一网关指纹前缀。
+// 调用前 key 应先 TrimSpace + ToLower。
+func hasGatewayFingerprintHeaderPrefix(lowerKey string) bool {
+	for _, p := range gatewayFingerprintHeaderPrefixes {
+		if strings.HasPrefix(lowerKey, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // GatewayCache 定义网关服务的缓存操作接口。
@@ -551,6 +578,34 @@ func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accou
 	}
 }
 
+// shortSwitchCooldownDuration 换号时加给旧账号的短期冷却时长。
+// 防止同一瞬间的并发请求又选到刚刚失败/限流的账号。
+const shortSwitchCooldownDuration = 30 * time.Second
+
+// ApplyShortSwitchCooldown 在账号级 failover 切换后，给旧账号加一个 30s 的短期冷却，
+// 用于抵御 "handle429/DB 写入 ↔ 并发选号" 之间的瞬时竞态。
+// 若账号已有更长的 RateLimitResetAt 或 TempUnschedulableUntil，则保留现有冷却不覆盖。
+func (s *GatewayService) ApplyShortSwitchCooldown(ctx context.Context, accountID int64) {
+	if s == nil || s.accountRepo == nil || accountID <= 0 {
+		return
+	}
+	account, err := s.accountRepo.GetByID(ctx, accountID)
+	if err != nil || account == nil {
+		return
+	}
+	now := time.Now()
+	target := now.Add(shortSwitchCooldownDuration)
+	if account.RateLimitResetAt != nil && account.RateLimitResetAt.After(target) {
+		return
+	}
+	if account.TempUnschedulableUntil != nil && account.TempUnschedulableUntil.After(target) {
+		return
+	}
+	if err := s.accountRepo.SetTempUnschedulable(ctx, accountID, target, "short_switch_cooldown"); err != nil {
+		slog.Warn("short_switch_cooldown_set_failed", "account_id", accountID, "error", err)
+	}
+}
+
 // GatewayService handles API gateway operations
 type GatewayService struct {
 	accountRepo           AccountRepository
@@ -588,6 +643,7 @@ type GatewayService struct {
 	debugGatewayBodyFile  atomic.Pointer[os.File] // non-nil when SUB2API_DEBUG_GATEWAY_BODY is set
 	tlsFPProfileService   *TLSFingerprintProfileService
 	balanceNotifyService  *BalanceNotifyService
+	telemetryHeartbeat    *TelemetryHeartbeatService
 }
 
 // NewGatewayService creates a new GatewayService
@@ -618,6 +674,7 @@ func NewGatewayService(
 	channelService *ChannelService,
 	resolver *ModelPricingResolver,
 	balanceNotifyService *BalanceNotifyService,
+	telemetryHeartbeat *TelemetryHeartbeatService,
 ) *GatewayService {
 	userGroupRateTTL := resolveUserGroupRateCacheTTL(cfg)
 	modelsListTTL := resolveModelsListCacheTTL(cfg)
@@ -653,6 +710,7 @@ func NewGatewayService(
 		channelService:       channelService,
 		resolver:             resolver,
 		balanceNotifyService: balanceNotifyService,
+		telemetryHeartbeat:   telemetryHeartbeat,
 	}
 	svc.userGroupRateResolver = newUserGroupRateResolver(
 		userGroupRateRepo,
@@ -735,6 +793,10 @@ func (s *GatewayService) GenerateSessionHash(parsed *ParsedRequest) string {
 func (s *GatewayService) BindStickySession(ctx context.Context, groupID *int64, sessionHash string, accountID int64) error {
 	if sessionHash == "" || accountID <= 0 || s.cache == nil {
 		return nil
+	}
+	// 遥测心跳：标记 session 活跃（服务内部判断是否开启）
+	if s.telemetryHeartbeat != nil {
+		s.telemetryHeartbeat.Touch(sessionHash, accountID)
 	}
 	return s.cache.SetSessionAccountID(ctx, derefGroupID(groupID), sessionHash, accountID, stickySessionTTL)
 }
@@ -4049,8 +4111,7 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, c.Request.Header)
 			if err == nil && fp != nil {
 				// metadata 透传开启时跳过 metadata 注入
-				_, mimicMPT, _ := s.settingService.GetGatewayForwardingSettings(ctx)
-				if !mimicMPT {
+				if !s.settingService.GetGatewayForwardingSettings(ctx).MetadataPassthrough {
 					if metadataUserID := s.buildOAuthMetadataUserID(parsed, account, fp); metadataUserID != "" {
 						normalizeOpts.injectMetadata = true
 						normalizeOpts.metadataUserID = metadataUserID
@@ -4833,6 +4894,9 @@ func (s *GatewayService) buildUpstreamRequestAnthropicAPIKeyPassthrough(
 			if passthroughBlockedHeaders[lowerKey] {
 				continue
 			}
+			if hasGatewayFingerprintHeaderPrefix(lowerKey) {
+				continue
+			}
 			for _, v := range values {
 				req.Header.Add(key, v)
 			}
@@ -5196,13 +5260,20 @@ var responseBlockedHeaders = map[string]bool{
 	"content-length":    true,
 }
 
-// writeAllUpstreamResponseHeaders 透传模式：上游响应头原样回写，仅跳过 hop-by-hop 头部。
+// writeAllUpstreamResponseHeaders 透传模式：上游响应头原样回写，仅跳过 hop-by-hop 头部
+// 和已知 AI 网关指纹前缀（LiteLLM/Helicone/Portkey/Cloudflare AI Gateway/Kong/
+// BentoML）。指纹前缀一旦泄漏到 Claude Code CLI，客户端会通过 Datadog/BigQuery
+// 上报「gateway detected」，直接把账号和代理绑定。
 func writeAllUpstreamResponseHeaders(dst http.Header, src http.Header) {
 	if dst == nil || src == nil {
 		return
 	}
 	for key, values := range src {
-		if responseBlockedHeaders[strings.ToLower(key)] {
+		lower := strings.ToLower(key)
+		if responseBlockedHeaders[lower] {
+			continue
+		}
+		if responseheaders.HasGatewayFingerprintPrefix(lower) {
 			continue
 		}
 		for _, v := range values {
@@ -5596,10 +5667,12 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 
 	// OAuth账号：应用统一指纹和metadata重写（受设置开关控制）
 	var fingerprint *Fingerprint
-	enableFP, enableMPT, enableCCH := true, false, false
+	forwardingSettings := defaultGatewayForwardingSettings()
 	if s.settingService != nil {
-		enableFP, enableMPT, enableCCH = s.settingService.GetGatewayForwardingSettings(ctx)
+		forwardingSettings = s.settingService.GetGatewayForwardingSettings(ctx)
 	}
+	enableFP := forwardingSettings.FingerprintUnification
+	enableMPT := forwardingSettings.MetadataPassthrough
 	if account.IsOAuth() && s.identityService != nil {
 		// 1. 获取或创建指纹（包含随机生成的ClientID）
 		fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, clientHeaders)
@@ -5625,14 +5698,10 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		}
 	}
 
-	// 同步 billing header cc_version 与实际发送的 User-Agent 版本
-	if fingerprint != nil {
-		body = syncBillingHeaderVersion(body, fingerprint.UserAgent)
-	}
-	// CCH 签名：将 cch=00000 占位符替换为 xxHash64 签名（需在所有 body 修改之后）
-	if enableCCH {
-		body = signBillingHeaderCCH(body)
-	}
+	// 应用 Claude Code body 级身份加固：env/system-reminder 清洗 →
+	// cc_version 真指纹 → billing header 同步/注入 → CCH 签名。全部受
+	// GatewayForwardingSettings 开关控制。
+	body = applyClaudeCodeBodyRewrites(body, s.cfg, fingerprint, forwardingSettings)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -5670,7 +5739,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 		setHeaderRaw(req.Header, "anthropic-version", "2023-06-01")
 	}
 	if tokenType == "oauth" {
-		applyClaudeOAuthHeaderDefaults(req)
+		applyClaudeOAuthHeaderDefaults(req, s.claudeClientHeaders())
 	}
 
 	// Build effective drop set: merge static defaults with dynamic beta policy filter rules
@@ -5683,7 +5752,7 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 			// 非 Claude Code 客户端：按 opencode 的策略处理：
 			// - 强制 Claude Code 指纹相关请求头（尤其是 user-agent/x-stainless/x-app）
 			// - 保留 incoming beta 的同时，确保 OAuth 所需 beta 存在
-			applyClaudeCodeMimicHeaders(req, reqStream)
+			applyClaudeCodeMimicHeaders(req, reqStream, s.claudeClientHeaders())
 
 			incomingBeta := getHeaderRaw(req.Header, "anthropic-beta")
 			// Claude Code OAuth credentials are scoped to Claude Code.
@@ -5723,6 +5792,10 @@ func (s *GatewayService) buildUpstreamRequest(ctx context.Context, c *gin.Contex
 			}
 		}
 	}
+
+	// 剥离 x-claude-remote-* + 重生成 x-client-request-id（按账号粒度的 UUID），
+	// 受 RemoteHeaderStrip 开关控制。放在 session-id 同步之后，避免被后续逻辑覆盖。
+	applyClaudeCodeHeaderRewrites(req, forwardingSettings)
 
 	// === DEBUG: 打印上游转发请求（headers + body 摘要），与 CLIENT_ORIGINAL 对比 ===
 	s.debugLogGatewaySnapshot("UPSTREAM_FORWARD", req.Header, body, map[string]string{
@@ -5813,14 +5886,35 @@ func defaultAPIKeyBetaHeader(body []byte) string {
 	return claude.APIKeyBetaHeader
 }
 
-func applyClaudeOAuthHeaderDefaults(req *http.Request) {
+// claudeClientHeaders 解析生效的 Claude CLI 客户端默认请求头。
+// 配置（config.ClaudeClient）中的非空字段覆盖 claude.DefaultHeaders。
+func (s *GatewayService) claudeClientHeaders() map[string]string {
+	if s == nil || s.cfg == nil {
+		return claude.DefaultHeaders
+	}
+	cc := s.cfg.ClaudeClient
+	return claude.BuildDefaultHeaders(claude.ClientHeaderConfig{
+		CLIVersion:              cc.CLIVersion,
+		StainlessLang:           cc.StainlessLang,
+		StainlessPackageVersion: cc.StainlessPackageVersion,
+		StainlessOS:             cc.StainlessOS,
+		StainlessArch:           cc.StainlessArch,
+		StainlessRuntime:        cc.StainlessRuntime,
+		StainlessRuntimeVersion: cc.StainlessRuntimeVersion,
+	})
+}
+
+func applyClaudeOAuthHeaderDefaults(req *http.Request, headers map[string]string) {
 	if req == nil {
 		return
+	}
+	if headers == nil {
+		headers = claude.DefaultHeaders
 	}
 	if getHeaderRaw(req.Header, "Accept") == "" {
 		setHeaderRaw(req.Header, "Accept", "application/json")
 	}
-	for key, value := range claude.DefaultHeaders {
+	for key, value := range headers {
 		if value == "" {
 			continue
 		}
@@ -6146,15 +6240,18 @@ var defaultDroppedBetasSet = buildBetaTokenSet(claude.DroppedBetas)
 // applyClaudeCodeMimicHeaders forces "Claude Code-like" request headers.
 // This mirrors opencode-anthropic-auth behavior: do not trust downstream
 // headers when using Claude Code-scoped OAuth credentials.
-func applyClaudeCodeMimicHeaders(req *http.Request, isStream bool) {
+func applyClaudeCodeMimicHeaders(req *http.Request, isStream bool, headers map[string]string) {
 	if req == nil {
 		return
 	}
+	if headers == nil {
+		headers = claude.DefaultHeaders
+	}
 	// Start with the standard defaults (fill missing).
-	applyClaudeOAuthHeaderDefaults(req)
+	applyClaudeOAuthHeaderDefaults(req, headers)
 	// Then force key headers to match Claude Code fingerprint regardless of what the client sent.
 	// 使用 resolveWireCasing 确保 key 与真实 wire format 一致（如 "x-app" 而非 "X-App"）
-	for key, value := range claude.DefaultHeaders {
+	for key, value := range headers {
 		if value == "" {
 			continue
 		}
@@ -8601,6 +8698,9 @@ func (s *GatewayService) buildCountTokensRequestAnthropicAPIKeyPassthrough(
 			if passthroughBlockedHeaders[lowerKey] {
 				continue
 			}
+			if hasGatewayFingerprintHeaderPrefix(lowerKey) {
+				continue
+			}
 			for _, v := range values {
 				req.Header.Add(key, v)
 			}
@@ -8648,10 +8748,12 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 
 	// OAuth 账号：应用统一指纹和重写 userID（受设置开关控制）
 	// 如果启用了会话ID伪装，会在重写后替换 session 部分为固定值
-	ctEnableFP, ctEnableMPT, ctEnableCCH := true, false, false
+	ctForwardingSettings := defaultGatewayForwardingSettings()
 	if s.settingService != nil {
-		ctEnableFP, ctEnableMPT, ctEnableCCH = s.settingService.GetGatewayForwardingSettings(ctx)
+		ctForwardingSettings = s.settingService.GetGatewayForwardingSettings(ctx)
 	}
+	ctEnableFP := ctForwardingSettings.FingerprintUnification
+	ctEnableMPT := ctForwardingSettings.MetadataPassthrough
 	var ctFingerprint *Fingerprint
 	if account.IsOAuth() && s.identityService != nil {
 		fp, err := s.identityService.GetOrCreateFingerprint(ctx, account.ID, clientHeaders)
@@ -8668,13 +8770,13 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		}
 	}
 
-	// 同步 billing header cc_version 与实际发送的 User-Agent 版本
-	if ctFingerprint != nil && ctEnableFP {
-		body = syncBillingHeaderVersion(body, ctFingerprint.UserAgent)
+	// count_tokens 复用 /v1/messages 的身份加固管线。仅在 enableFP 开启时
+	// 传入 fingerprint；否则走裸 body（与旧行为一致）。
+	ctFPToApply := ctFingerprint
+	if !ctEnableFP {
+		ctFPToApply = nil
 	}
-	if ctEnableCCH {
-		body = signBillingHeaderCCH(body)
-	}
+	body = applyClaudeCodeBodyRewrites(body, s.cfg, ctFPToApply, ctForwardingSettings)
 
 	req, err := http.NewRequestWithContext(ctx, "POST", targetURL, bytes.NewReader(body))
 	if err != nil {
@@ -8712,7 +8814,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 		setHeaderRaw(req.Header, "anthropic-version", "2023-06-01")
 	}
 	if tokenType == "oauth" {
-		applyClaudeOAuthHeaderDefaults(req)
+		applyClaudeOAuthHeaderDefaults(req, s.claudeClientHeaders())
 	}
 
 	// Build effective drop set for count_tokens: merge static defaults with dynamic beta policy filter rules
@@ -8721,7 +8823,7 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 	// OAuth 账号：处理 anthropic-beta header
 	if tokenType == "oauth" {
 		if mimicClaudeCode {
-			applyClaudeCodeMimicHeaders(req, false)
+			applyClaudeCodeMimicHeaders(req, false, s.claudeClientHeaders())
 
 			incomingBeta := getHeaderRaw(req.Header, "anthropic-beta")
 			requiredBetas := []string{claude.BetaClaudeCode, claude.BetaOAuth, claude.BetaInterleavedThinking, claude.BetaTokenCounting}
@@ -8760,6 +8862,10 @@ func (s *GatewayService) buildCountTokensRequest(ctx context.Context, c *gin.Con
 			}
 		}
 	}
+
+	// 剥离 x-claude-remote-* + 重生成 x-client-request-id。与 buildUpstreamRequest
+	// 保持同样的行为，避免 count_tokens 路径漏处理成为风险点。
+	applyClaudeCodeHeaderRewrites(req, ctForwardingSettings)
 
 	if c != nil && tokenType == "oauth" {
 		c.Set(claudeMimicDebugInfoKey, buildClaudeMimicDebugLine(req, body, account, tokenType, mimicClaudeCode))

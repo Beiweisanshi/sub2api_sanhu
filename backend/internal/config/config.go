@@ -84,6 +84,18 @@ type Config struct {
 	Update                  UpdateConfig                  `mapstructure:"update"`
 	Idempotency             IdempotencyConfig             `mapstructure:"idempotency"`
 	Telemetry               TelemetryConfig               `mapstructure:"telemetry"`
+	ClaudeClient            ClaudeClientConfig            `mapstructure:"claude_client"`
+}
+
+// ClaudeClientConfig 用于跟随官方 claude-cli 指纹。所有字段留空则使用 claude.DefaultHeaders。
+type ClaudeClientConfig struct {
+	CLIVersion              string `mapstructure:"cli_version"`
+	StainlessLang           string `mapstructure:"stainless_lang"`
+	StainlessPackageVersion string `mapstructure:"stainless_package_version"`
+	StainlessOS             string `mapstructure:"stainless_os"`
+	StainlessArch           string `mapstructure:"stainless_arch"`
+	StainlessRuntime        string `mapstructure:"stainless_runtime"`
+	StainlessRuntimeVersion string `mapstructure:"stainless_runtime_version"`
 }
 
 type LogConfig struct {
@@ -954,6 +966,19 @@ type TelemetryConfig struct {
 	PromptEnv TelemetryPromptEnvConfig `mapstructure:"prompt_env"`
 	// LeakFields: field names to delete from event_data (e.g., ["baseUrl","base_url","gateway"])
 	LeakFields []string `mapstructure:"leak_fields"`
+	// Heartbeat: 模拟真实 Claude CLI 的长连接心跳行为，按活跃 session 周期性发送
+	// 伪造 event_logging/batch。默认关闭，需显式开启。
+	Heartbeat TelemetryHeartbeatConfig `mapstructure:"heartbeat"`
+}
+
+// TelemetryHeartbeatConfig 控制活跃 session 的遥测心跳行为。
+type TelemetryHeartbeatConfig struct {
+	// Enabled: 主开关（默认 false）
+	Enabled bool `mapstructure:"enabled"`
+	// IntervalSeconds: 心跳间隔（默认 10 秒）
+	IntervalSeconds int `mapstructure:"interval_seconds"`
+	// TTLSeconds: session 无活跃多久后停止心跳（默认 600 秒 = 10 分钟）
+	TTLSeconds int `mapstructure:"ttl_seconds"`
 }
 
 // TelemetryIdentityConfig holds canonical identity values for telemetry rewriting.
@@ -1602,7 +1627,31 @@ func setDefaults() {
 	viper.SetDefault("telemetry.prompt_env.shell", "/bin/bash")
 	viper.SetDefault("telemetry.prompt_env.os_version", "Linux 6.1.0")
 	viper.SetDefault("telemetry.prompt_env.working_dir", "/home/user/project")
-	viper.SetDefault("telemetry.leak_fields", []string{"baseUrl", "base_url", "gateway"})
+	// Fields we strip from telemetry event_data before forwarding. The default
+	// set covers:
+	//   - gateway / proxy markers that reveal this is not a direct CLI session
+	//     (baseUrl, base_url, gateway, apiBaseUrlHost, api_base_url_host)
+	//   - cross-account linkage vectors observed in real telemetry payloads
+	//     (rh = git remote hash, repo_hash, machineId/machine_id)
+	//   - Statsig/GrowthBook SDK fingerprints (stable_id, anonymousId)
+	//   - generic meta-containers that can embed nested identity fields
+	//     (user_metadata, event_metadata)
+	// hostname / session_id are NOT deleted here — they get rewritten to
+	// canonical per-account values by telemetry_rewriter so the presence of
+	// these fields still looks organic to the upstream.
+	viper.SetDefault("telemetry.leak_fields", []string{
+		"baseUrl", "base_url", "gateway",
+		"apiBaseUrlHost", "api_base_url_host",
+		"rh", "repo_hash",
+		"machineId", "machine_id",
+		"stable_id", "anonymousId",
+		"user_metadata", "event_metadata",
+	})
+	// 遥测心跳：默认关闭，需管理员主动开启；开启后每 10s 复写一次真实 event_logging/batch 样本，
+	// session 10 分钟无活动自动停止。
+	viper.SetDefault("telemetry.heartbeat.enabled", false)
+	viper.SetDefault("telemetry.heartbeat.interval_seconds", 10)
+	viper.SetDefault("telemetry.heartbeat.ttl_seconds", 600)
 
 }
 

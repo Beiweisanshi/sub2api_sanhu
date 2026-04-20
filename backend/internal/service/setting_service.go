@@ -79,12 +79,44 @@ const backendModeCacheTTL = 60 * time.Second
 const backendModeErrorTTL = 5 * time.Second
 const backendModeDBTimeout = 5 * time.Second
 
+// GatewayForwardingSettings 聚合 OAuth 账号转发行为的所有开关。
+// 成员命名与 settings_view.go 的 SettingsData 保持一致，便于管理端往返映射。
+type GatewayForwardingSettings struct {
+	FingerprintUnification bool
+	MetadataPassthrough    bool
+	CCHSigning             bool
+	EnvScrub               bool
+	SystemReminderScrub    bool
+	BillingInject          bool
+	CCFingerprintV2        bool
+	ResponseHeaderStrip    bool
+	RemoteHeaderStrip      bool
+	StrictValidator        bool
+	TelemetryHeartbeat     bool
+}
+
+// defaultGatewayForwardingSettings returns the fail-open defaults used when
+// persistence is unreachable or settings have never been written.
+func defaultGatewayForwardingSettings() GatewayForwardingSettings {
+	return GatewayForwardingSettings{
+		FingerprintUnification: true,
+		MetadataPassthrough:    false,
+		CCHSigning:             false,
+		EnvScrub:               true,
+		SystemReminderScrub:    true,
+		BillingInject:          true,
+		CCFingerprintV2:        true,
+		ResponseHeaderStrip:    true,
+		RemoteHeaderStrip:      true,
+		StrictValidator:        false,
+		TelemetryHeartbeat:     false,
+	}
+}
+
 // cachedGatewayForwardingSettings 缓存网关转发行为设置（进程内缓存，60s TTL）
 type cachedGatewayForwardingSettings struct {
-	fingerprintUnification bool
-	metadataPassthrough    bool
-	cchSigning             bool
-	expiresAt              int64 // unix nano
+	settings  GatewayForwardingSettings
+	expiresAt int64 // unix nano
 }
 
 var gatewayForwardingCache atomic.Value // *cachedGatewayForwardingSettings
@@ -627,6 +659,14 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 	updates[SettingKeyEnableFingerprintUnification] = strconv.FormatBool(settings.EnableFingerprintUnification)
 	updates[SettingKeyEnableMetadataPassthrough] = strconv.FormatBool(settings.EnableMetadataPassthrough)
 	updates[SettingKeyEnableCCHSigning] = strconv.FormatBool(settings.EnableCCHSigning)
+	updates[SettingKeyEnableEnvScrub] = strconv.FormatBool(settings.EnableEnvScrub)
+	updates[SettingKeyEnableSystemReminderScrub] = strconv.FormatBool(settings.EnableSystemReminderScrub)
+	updates[SettingKeyEnableBillingInject] = strconv.FormatBool(settings.EnableBillingInject)
+	updates[SettingKeyEnableCCFingerprintV2] = strconv.FormatBool(settings.EnableCCFingerprintV2)
+	updates[SettingKeyEnableResponseHeaderStrip] = strconv.FormatBool(settings.EnableResponseHeaderStrip)
+	updates[SettingKeyEnableRemoteHeaderStrip] = strconv.FormatBool(settings.EnableRemoteHeaderStrip)
+	updates[SettingKeyEnableStrictValidator] = strconv.FormatBool(settings.EnableStrictValidator)
+	updates[SettingKeyEnableTelemetryHeartbeat] = strconv.FormatBool(settings.EnableTelemetryHeartbeat)
 
 	// Balance low notification
 	updates[SettingKeyBalanceLowNotifyEnabled] = strconv.FormatBool(settings.BalanceLowNotifyEnabled)
@@ -651,10 +691,20 @@ func (s *SettingService) UpdateSettings(ctx context.Context, settings *SystemSet
 		})
 		gatewayForwardingSF.Forget("gateway_forwarding")
 		gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
-			fingerprintUnification: settings.EnableFingerprintUnification,
-			metadataPassthrough:    settings.EnableMetadataPassthrough,
-			cchSigning:             settings.EnableCCHSigning,
-			expiresAt:              time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
+			settings: GatewayForwardingSettings{
+				FingerprintUnification: settings.EnableFingerprintUnification,
+				MetadataPassthrough:    settings.EnableMetadataPassthrough,
+				CCHSigning:             settings.EnableCCHSigning,
+				EnvScrub:               settings.EnableEnvScrub,
+				SystemReminderScrub:    settings.EnableSystemReminderScrub,
+				BillingInject:          settings.EnableBillingInject,
+				CCFingerprintV2:        settings.EnableCCFingerprintV2,
+				ResponseHeaderStrip:    settings.EnableResponseHeaderStrip,
+				RemoteHeaderStrip:      settings.EnableRemoteHeaderStrip,
+				StrictValidator:        settings.EnableStrictValidator,
+				TelemetryHeartbeat:     settings.EnableTelemetryHeartbeat,
+			},
+			expiresAt: time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
 		})
 		if s.onUpdate != nil {
 			s.onUpdate() // Invalidate cache after settings update
@@ -763,20 +813,17 @@ func (s *SettingService) IsBackendModeEnabled(ctx context.Context) bool {
 
 // GetGatewayForwardingSettings returns cached gateway forwarding settings.
 // Uses in-process atomic.Value cache with 60s TTL, zero-lock hot path.
-// Returns (fingerprintUnification, metadataPassthrough, cchSigning).
-func (s *SettingService) GetGatewayForwardingSettings(ctx context.Context) (fingerprintUnification, metadataPassthrough, cchSigning bool) {
+// On persistence failure falls back to defaultGatewayForwardingSettings().
+func (s *SettingService) GetGatewayForwardingSettings(ctx context.Context) GatewayForwardingSettings {
 	if cached, ok := gatewayForwardingCache.Load().(*cachedGatewayForwardingSettings); ok && cached != nil {
 		if time.Now().UnixNano() < cached.expiresAt {
-			return cached.fingerprintUnification, cached.metadataPassthrough, cached.cchSigning
+			return cached.settings
 		}
-	}
-	type gwfResult struct {
-		fp, mp, cch bool
 	}
 	val, _, _ := gatewayForwardingSF.Do("gateway_forwarding", func() (any, error) {
 		if cached, ok := gatewayForwardingCache.Load().(*cachedGatewayForwardingSettings); ok && cached != nil {
 			if time.Now().UnixNano() < cached.expiresAt {
-				return gwfResult{cached.fingerprintUnification, cached.metadataPassthrough, cached.cchSigning}, nil
+				return cached.settings, nil
 			}
 		}
 		dbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gatewayForwardingDBTimeout)
@@ -785,35 +832,57 @@ func (s *SettingService) GetGatewayForwardingSettings(ctx context.Context) (fing
 			SettingKeyEnableFingerprintUnification,
 			SettingKeyEnableMetadataPassthrough,
 			SettingKeyEnableCCHSigning,
+			SettingKeyEnableEnvScrub,
+			SettingKeyEnableSystemReminderScrub,
+			SettingKeyEnableBillingInject,
+			SettingKeyEnableCCFingerprintV2,
+			SettingKeyEnableResponseHeaderStrip,
+			SettingKeyEnableRemoteHeaderStrip,
+			SettingKeyEnableStrictValidator,
+			SettingKeyEnableTelemetryHeartbeat,
 		})
 		if err != nil {
 			slog.Warn("failed to get gateway forwarding settings", "error", err)
+			fallback := defaultGatewayForwardingSettings()
 			gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
-				fingerprintUnification: true,
-				metadataPassthrough:    false,
-				cchSigning:             false,
-				expiresAt:              time.Now().Add(gatewayForwardingErrorTTL).UnixNano(),
+				settings:  fallback,
+				expiresAt: time.Now().Add(gatewayForwardingErrorTTL).UnixNano(),
 			})
-			return gwfResult{true, false, false}, nil
+			return fallback, nil
 		}
-		fp := true
-		if v, ok := values[SettingKeyEnableFingerprintUnification]; ok && v != "" {
-			fp = v == "true"
+		defaults := defaultGatewayForwardingSettings()
+		result := GatewayForwardingSettings{
+			FingerprintUnification: boolSettingWithDefault(values, SettingKeyEnableFingerprintUnification, defaults.FingerprintUnification),
+			MetadataPassthrough:    boolSettingWithDefault(values, SettingKeyEnableMetadataPassthrough, defaults.MetadataPassthrough),
+			CCHSigning:             boolSettingWithDefault(values, SettingKeyEnableCCHSigning, defaults.CCHSigning),
+			EnvScrub:               boolSettingWithDefault(values, SettingKeyEnableEnvScrub, defaults.EnvScrub),
+			SystemReminderScrub:    boolSettingWithDefault(values, SettingKeyEnableSystemReminderScrub, defaults.SystemReminderScrub),
+			BillingInject:          boolSettingWithDefault(values, SettingKeyEnableBillingInject, defaults.BillingInject),
+			CCFingerprintV2:        boolSettingWithDefault(values, SettingKeyEnableCCFingerprintV2, defaults.CCFingerprintV2),
+			ResponseHeaderStrip:    boolSettingWithDefault(values, SettingKeyEnableResponseHeaderStrip, defaults.ResponseHeaderStrip),
+			RemoteHeaderStrip:      boolSettingWithDefault(values, SettingKeyEnableRemoteHeaderStrip, defaults.RemoteHeaderStrip),
+			StrictValidator:        boolSettingWithDefault(values, SettingKeyEnableStrictValidator, defaults.StrictValidator),
+			TelemetryHeartbeat:     boolSettingWithDefault(values, SettingKeyEnableTelemetryHeartbeat, defaults.TelemetryHeartbeat),
 		}
-		mp := values[SettingKeyEnableMetadataPassthrough] == "true"
-		cch := values[SettingKeyEnableCCHSigning] == "true"
 		gatewayForwardingCache.Store(&cachedGatewayForwardingSettings{
-			fingerprintUnification: fp,
-			metadataPassthrough:    mp,
-			cchSigning:             cch,
-			expiresAt:              time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
+			settings:  result,
+			expiresAt: time.Now().Add(gatewayForwardingCacheTTL).UnixNano(),
 		})
-		return gwfResult{fp, mp, cch}, nil
+		return result, nil
 	})
-	if r, ok := val.(gwfResult); ok {
-		return r.fp, r.mp, r.cch
+	if r, ok := val.(GatewayForwardingSettings); ok {
+		return r
 	}
-	return true, false, false // fail-open defaults
+	return defaultGatewayForwardingSettings()
+}
+
+// boolSettingWithDefault returns values[key] parsed as bool if present and non-empty,
+// otherwise the supplied fallback.
+func boolSettingWithDefault(values map[string]string, key string, fallback bool) bool {
+	if v, ok := values[key]; ok && v != "" {
+		return v == "true"
+	}
+	return fallback
 }
 
 // IsEmailVerifyEnabled 检查是否开启邮件验证
@@ -1268,14 +1337,19 @@ func (s *SettingService) parseSettings(settings map[string]string) *SystemSettin
 	// 分组隔离
 	result.AllowUngroupedKeyScheduling = settings[SettingKeyAllowUngroupedKeyScheduling] == "true"
 
-	// Gateway forwarding behavior (defaults: fingerprint=true, metadata_passthrough=false, cch_signing=false)
-	if v, ok := settings[SettingKeyEnableFingerprintUnification]; ok && v != "" {
-		result.EnableFingerprintUnification = v == "true"
-	} else {
-		result.EnableFingerprintUnification = true // default: enabled (current behavior)
-	}
-	result.EnableMetadataPassthrough = settings[SettingKeyEnableMetadataPassthrough] == "true"
-	result.EnableCCHSigning = settings[SettingKeyEnableCCHSigning] == "true"
+	// Gateway forwarding behavior — mirror defaultGatewayForwardingSettings().
+	defaults := defaultGatewayForwardingSettings()
+	result.EnableFingerprintUnification = boolSettingWithDefault(settings, SettingKeyEnableFingerprintUnification, defaults.FingerprintUnification)
+	result.EnableMetadataPassthrough = boolSettingWithDefault(settings, SettingKeyEnableMetadataPassthrough, defaults.MetadataPassthrough)
+	result.EnableCCHSigning = boolSettingWithDefault(settings, SettingKeyEnableCCHSigning, defaults.CCHSigning)
+	result.EnableEnvScrub = boolSettingWithDefault(settings, SettingKeyEnableEnvScrub, defaults.EnvScrub)
+	result.EnableSystemReminderScrub = boolSettingWithDefault(settings, SettingKeyEnableSystemReminderScrub, defaults.SystemReminderScrub)
+	result.EnableBillingInject = boolSettingWithDefault(settings, SettingKeyEnableBillingInject, defaults.BillingInject)
+	result.EnableCCFingerprintV2 = boolSettingWithDefault(settings, SettingKeyEnableCCFingerprintV2, defaults.CCFingerprintV2)
+	result.EnableResponseHeaderStrip = boolSettingWithDefault(settings, SettingKeyEnableResponseHeaderStrip, defaults.ResponseHeaderStrip)
+	result.EnableRemoteHeaderStrip = boolSettingWithDefault(settings, SettingKeyEnableRemoteHeaderStrip, defaults.RemoteHeaderStrip)
+	result.EnableStrictValidator = boolSettingWithDefault(settings, SettingKeyEnableStrictValidator, defaults.StrictValidator)
+	result.EnableTelemetryHeartbeat = boolSettingWithDefault(settings, SettingKeyEnableTelemetryHeartbeat, defaults.TelemetryHeartbeat)
 
 	// Web search emulation: quick enabled check from the JSON config
 	if raw := settings[SettingKeyWebSearchEmulationConfig]; raw != "" {

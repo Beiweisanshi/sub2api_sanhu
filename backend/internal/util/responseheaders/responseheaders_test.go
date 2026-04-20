@@ -65,3 +65,48 @@ func TestFilterHeadersEnabledUsesAllowlist(t *testing.T) {
 		t.Fatalf("expected X-Blocked removed, got %q", filtered.Get("X-Blocked"))
 	}
 }
+
+func TestHasGatewayFingerprintPrefix(t *testing.T) {
+	cases := map[string]bool{
+		"x-litellm-request-id":  true,
+		"helicone-cache":        true,
+		"x-portkey-something":   true,
+		"cf-aig-cache-status":   true,
+		"x-kong-upstream-uri":   true,
+		"x-bt-trace-id":         true,
+		"X-LITELLM-DEBUG":       true, // case-insensitive
+		"content-type":          false,
+		"x-ratelimit-remaining": false,
+		"":                      false,
+	}
+	for key, want := range cases {
+		if got := HasGatewayFingerprintPrefix(key); got != want {
+			t.Fatalf("HasGatewayFingerprintPrefix(%q) = %v, want %v", key, got, want)
+		}
+	}
+}
+
+func TestFilterHeaders_StripsGatewayPrefix(t *testing.T) {
+	src := http.Header{}
+	src.Set("Content-Type", "application/json")
+	src.Set("x-litellm-model", "gpt-4o")
+	src.Set("Helicone-Cache", "HIT")
+
+	// Even if the allowlist accidentally permits one of these, the prefix
+	// filter should still strip it.
+	filter := CompileHeaderFilter(config.ResponseHeaderConfig{
+		Enabled:           true,
+		AdditionalAllowed: []string{"x-litellm-model", "helicone-cache"},
+	})
+	filtered := FilterHeaders(src, filter)
+
+	if filtered.Get("Content-Type") != "application/json" {
+		t.Fatalf("expected Content-Type kept, got %q", filtered.Get("Content-Type"))
+	}
+	if filtered.Get("x-litellm-model") != "" {
+		t.Fatalf("expected x-litellm-model stripped, got %q", filtered.Get("x-litellm-model"))
+	}
+	if filtered.Get("Helicone-Cache") != "" {
+		t.Fatalf("expected Helicone-Cache stripped, got %q", filtered.Get("Helicone-Cache"))
+	}
+}

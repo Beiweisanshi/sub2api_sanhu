@@ -101,23 +101,45 @@ func (s *AccountTestService) validateUpstreamBaseURL(raw string) (string, error)
 	return normalized, nil
 }
 
+// claudeClientHeaders 解析生效的 Claude CLI 客户端默认请求头（配置优先）。
+func (s *AccountTestService) claudeClientHeaders() map[string]string {
+	if s == nil || s.cfg == nil {
+		return claude.DefaultHeaders
+	}
+	cc := s.cfg.ClaudeClient
+	return claude.BuildDefaultHeaders(claude.ClientHeaderConfig{
+		CLIVersion:              cc.CLIVersion,
+		StainlessLang:           cc.StainlessLang,
+		StainlessPackageVersion: cc.StainlessPackageVersion,
+		StainlessOS:             cc.StainlessOS,
+		StainlessArch:           cc.StainlessArch,
+		StainlessRuntime:        cc.StainlessRuntime,
+		StainlessRuntimeVersion: cc.StainlessRuntimeVersion,
+	})
+}
+
 // generateSessionString generates a Claude Code style session string.
-// The output format is determined by the UA version in claude.DefaultHeaders,
-// ensuring consistency between the user_id format and the UA sent to upstream.
-func generateSessionString() (string, error) {
+// The output format is determined by the provided UA header value (falling back
+// to claude.DefaultHeaders), ensuring consistency between the user_id format
+// and the UA sent to upstream.
+func generateSessionString(uaHeader string) (string, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
 	hex64 := hex.EncodeToString(b)
 	sessionUUID := uuid.New().String()
-	uaVersion := ExtractCLIVersion(claude.DefaultHeaders["User-Agent"])
+	if uaHeader == "" {
+		uaHeader = claude.DefaultHeaders["User-Agent"]
+	}
+	uaVersion := ExtractCLIVersion(uaHeader)
 	return FormatMetadataUserID(hex64, "", sessionUUID, uaVersion), nil
 }
 
-// createTestPayload creates a Claude Code style test request payload
-func createTestPayload(modelID string) (map[string]any, error) {
-	sessionID, err := generateSessionString()
+// createTestPayload creates a Claude Code style test request payload.
+// uaHeader provides the UA value used to derive the metadata user_id suffix.
+func createTestPayload(modelID string, uaHeader string) (map[string]any, error) {
+	sessionID, err := generateSessionString(uaHeader)
 	if err != nil {
 		return nil, err
 	}
@@ -246,7 +268,8 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 	c.Writer.Flush()
 
 	// Create Claude Code style payload (same for all account types)
-	payload, err := createTestPayload(testModelID)
+	clientHeaders := s.claudeClientHeaders()
+	payload, err := createTestPayload(testModelID, clientHeaders["User-Agent"])
 	if err != nil {
 		return s.sendErrorAndEnd(c, "Failed to create test payload")
 	}
@@ -265,7 +288,7 @@ func (s *AccountTestService) testClaudeAccountConnection(c *gin.Context, account
 	req.Header.Set("anthropic-version", "2023-06-01")
 
 	// Apply Claude Code client headers
-	for key, value := range claude.DefaultHeaders {
+	for key, value := range clientHeaders {
 		req.Header.Set(key, value)
 	}
 

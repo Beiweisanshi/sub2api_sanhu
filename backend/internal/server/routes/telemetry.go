@@ -35,6 +35,13 @@ func RegisterTelemetryRoutes(
 	{
 		eventLogging.POST("/event_logging/batch", h.Telemetry.EventLoggingBatch)
 		eventLogging.POST("/event_logging", h.Telemetry.EventLogging)
+		// eval/features 与 metrics_enabled 不经由 Anthropic 真实上游；
+		// 直接在网关侧拟真响应，避免「返回空 {}」成为异常信号，
+		// 也避免把客户端真实 GrowthBook 请求暴露给 proxy 链路。
+		eventLogging.POST("/eval/features", h.Telemetry.EvalFeatures)
+		eventLogging.GET("/eval/features", h.Telemetry.EvalFeatures)
+		eventLogging.GET("/metrics_enabled", h.Telemetry.MetricsEnabled)
+		eventLogging.POST("/metrics_enabled", h.Telemetry.MetricsEnabled)
 	}
 
 	// /policy_limits and /settings — Claude Code configuration endpoints

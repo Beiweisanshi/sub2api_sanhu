@@ -252,6 +252,22 @@ const (
 	SettingKeyEnableMetadataPassthrough = "enable_metadata_passthrough"
 	// SettingKeyEnableCCHSigning 是否对 billing header 中的 cch 进行 xxHash64 签名（默认 false）
 	SettingKeyEnableCCHSigning = "enable_cch_signing"
+	// SettingKeyEnableEnvScrub 是否清洗 system <env>/working dir/home paths（默认 true）
+	SettingKeyEnableEnvScrub = "enable_env_scrub"
+	// SettingKeyEnableSystemReminderScrub 是否清洗 messages 里 <system-reminder> 块（默认 true）
+	SettingKeyEnableSystemReminderScrub = "enable_system_reminder_scrub"
+	// SettingKeyEnableBillingInject billing header 缺失时是否主动注入（默认 true）
+	SettingKeyEnableBillingInject = "enable_billing_inject"
+	// SettingKeyEnableCCFingerprintV2 是否用 SHA256 真指纹替代 cc_version 的 .000 占位（默认 true）
+	SettingKeyEnableCCFingerprintV2 = "enable_cc_fingerprint_v2"
+	// SettingKeyEnableResponseHeaderStrip 是否剥离响应头里 AI gateway 指纹（默认 true）
+	SettingKeyEnableResponseHeaderStrip = "enable_response_header_strip"
+	// SettingKeyEnableRemoteHeaderStrip 是否剥离 x-claude-remote-* 并重生成 x-client-request-id（默认 true）
+	SettingKeyEnableRemoteHeaderStrip = "enable_remote_header_strip"
+	// SettingKeyEnableStrictValidator 是否启用 thinking/assistant-prefill 严格校验（默认 false，灰度）
+	SettingKeyEnableStrictValidator = "enable_strict_validator"
+	// SettingKeyEnableTelemetryHeartbeat 是否启动主动 telemetry 心跳（默认 false）
+	SettingKeyEnableTelemetryHeartbeat = "enable_telemetry_heartbeat"
 
 	// Balance Low Notification
 	SettingKeyBalanceLowNotifyEnabled     = "balance_low_notify_enabled"      // 全局开关

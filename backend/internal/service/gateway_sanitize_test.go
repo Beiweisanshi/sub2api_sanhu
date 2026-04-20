@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 	"github.com/stretchr/testify/require"
 )
 
@@ -84,20 +85,27 @@ func TestScrubHomePaths(t *testing.T) {
 
 func TestRewriteCCVersion(t *testing.T) {
 	input := "some text cc_version=2.1.22.abc and cc_version=1.0.5.def more"
-	got := rewriteCCVersion(input, "2.1.22")
-	require.Equal(t, "some text cc_version=2.1.22.000 and cc_version=2.1.22.000 more", got)
+	got := rewriteCCVersion(input, "2.1.22", "f0e")
+	require.Equal(t, "some text cc_version=2.1.22.f0e and cc_version=2.1.22.f0e more", got)
+}
+
+func TestRewriteCCVersion_EmptyFingerprintRandom(t *testing.T) {
+	input := "cc_version=2.1.22.abc"
+	got := rewriteCCVersion(input, "2.1.99", "")
+	require.Regexp(t, `^cc_version=2\.1\.99\.[0-9a-f]{3}$`, got)
 }
 
 func TestRewriteBillingHeaderValue(t *testing.T) {
 	input := "cc_version=2.1.22.abc; cc_entrypoint=cli"
-	got := RewriteBillingHeaderValue(input, "2.1.99")
-	require.Equal(t, "cc_version=2.1.99.000; cc_entrypoint=cli", got)
-	require.Equal(t, input, RewriteBillingHeaderValue(input, ""))
+	got := RewriteBillingHeaderValue(input, "2.1.99", "a7d")
+	require.Equal(t, "cc_version=2.1.99.a7d; cc_entrypoint=cli", got)
+	// Empty version returns value unchanged.
+	require.Equal(t, input, RewriteBillingHeaderValue(input, "", "a7d"))
 }
 
 func TestCanonicalClaudeCLIUserAgent(t *testing.T) {
 	require.Equal(t, "claude-cli/2.1.99 (external, cli)", CanonicalClaudeCLIUserAgent("2.1.99"))
-	require.Equal(t, "claude-cli/2.1.22 (external, cli)", CanonicalClaudeCLIUserAgent(""))
+	require.Equal(t, "claude-cli/"+claude.DefaultCLIVersion+" (external, cli)", CanonicalClaudeCLIUserAgent(""))
 }
 
 func TestExtractHomePrefix(t *testing.T) {

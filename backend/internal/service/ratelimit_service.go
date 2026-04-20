@@ -29,6 +29,13 @@ type RateLimitService struct {
 	usageCache            map[int64]*geminiUsageCacheEntry
 }
 
+// anthropicPreemptiveCooldownThreshold 当 5h / 7d 窗口 utilization 达到此阈值
+// 且尚未实际 429 时，主动冷却账号到窗口 reset，避免撞限流。
+const anthropicPreemptiveCooldownThreshold = 0.90
+
+// anthropicPreemptive7dCooldownCap 7d 窗口的预防性冷却上限，防止过度冷却。
+const anthropicPreemptive7dCooldownCap = 24 * time.Hour
+
 // SuccessfulTestRecoveryResult 表示测试成功后恢复了哪些运行时状态。
 type SuccessfulTestRecoveryResult struct {
 	ClearedError     bool
@@ -1199,6 +1206,95 @@ func (s *RateLimitService) UpdateSessionWindow(ctx context.Context, account *Acc
 			slog.Warn("rate_limit_clear_failed", "account_id", account.ID, "error", err)
 		}
 	}
+
+	// 预防性冷却：任一窗口 utilization ≥ 阈值且尚未 429 时，提前冷却到窗口 reset。
+	s.applyAnthropicPreemptiveCooldown(ctx, account, headers)
+}
+
+// applyAnthropicPreemptiveCooldown 解析 5h / 7d utilization，≥阈值时主动设置 TempUnschedulable。
+// 取两窗口中较远的 reset（但 7d 受 anthropicPreemptive7dCooldownCap 上限）。
+func (s *RateLimitService) applyAnthropicPreemptiveCooldown(ctx context.Context, account *Account, headers http.Header) {
+	if account == nil {
+		return
+	}
+	// 若账号已处于 rate limited / temp unschedulable，交给现有路径处理。
+	if account.IsRateLimited() {
+		return
+	}
+	now := time.Now()
+	if account.TempUnschedulableUntil != nil && account.TempUnschedulableUntil.After(now) {
+		return
+	}
+
+	parse := func(window string) (util float64, reset *time.Time, ok bool) {
+		prefix := "anthropic-ratelimit-unified-" + window + "-"
+		utilStr := headers.Get(prefix + "utilization")
+		if utilStr == "" {
+			return 0, nil, false
+		}
+		u, err := strconv.ParseFloat(utilStr, 64)
+		if err != nil {
+			return 0, nil, false
+		}
+		var r *time.Time
+		if resetStr := headers.Get(prefix + "reset"); resetStr != "" {
+			if ts, err := strconv.ParseInt(resetStr, 10, 64); err == nil {
+				if ts > 1e11 {
+					ts /= 1000
+				}
+				t := time.Unix(ts, 0)
+				r = &t
+			}
+		}
+		return u, r, true
+	}
+
+	util5h, reset5h, has5h := parse("5h")
+	util7d, reset7d, has7d := parse("7d")
+
+	// 必须 ≥ 阈值 且 < 1.0（= 1.0 走已限流路径）
+	trigger5h := has5h && util5h >= anthropicPreemptiveCooldownThreshold && util5h < 1.0
+	trigger7d := has7d && util7d >= anthropicPreemptiveCooldownThreshold && util7d < 1.0
+	if !trigger5h && !trigger7d {
+		return
+	}
+
+	var until time.Time
+	var reason string
+	if trigger7d && reset7d != nil {
+		cap7d := now.Add(anthropicPreemptive7dCooldownCap)
+		if reset7d.Before(cap7d) {
+			until = *reset7d
+		} else {
+			until = cap7d
+		}
+		reason = "preemptive_7d_high_utilization"
+	}
+	if trigger5h && reset5h != nil {
+		// 取较晚的窗口 reset
+		if until.IsZero() || reset5h.After(until) {
+			until = *reset5h
+			reason = "preemptive_5h_high_utilization"
+		}
+	}
+	if until.IsZero() || !until.After(now) {
+		return
+	}
+
+	msg := "preemptive_cooldown: util_5h=" + strconv.FormatFloat(util5h, 'f', 3, 64) +
+		" util_7d=" + strconv.FormatFloat(util7d, 'f', 3, 64) +
+		" reason=" + reason
+	if err := s.accountRepo.SetTempUnschedulable(ctx, account.ID, until, msg); err != nil {
+		slog.Warn("preemptive_cooldown_set_failed", "account_id", account.ID, "error", err)
+		return
+	}
+	slog.Info("preemptive_cooldown_set",
+		"account_id", account.ID,
+		"util_5h", util5h,
+		"util_7d", util7d,
+		"until", until,
+		"reason", reason,
+	)
 }
 
 // ClearRateLimit 清除账号的限流状态

@@ -126,6 +126,10 @@ type SystemSettings struct {
 	EnableFingerprintUnification bool `json:"enable_fingerprint_unification"`
 	EnableMetadataPassthrough    bool `json:"enable_metadata_passthrough"`
 	EnableCCHSigning             bool `json:"enable_cch_signing"`
+	EnableEnvScrub               bool `json:"enable_env_scrub"`
+	EnableSystemReminderScrub    bool `json:"enable_system_reminder_scrub"`
+	EnableBillingInject          bool `json:"enable_billing_inject"`
+	EnableCCFingerprintV2        bool `json:"enable_cc_fingerprint_v2"`
 
 	// Web Search Emulation
 	WebSearchEmulationEnabled bool `json:"web_search_emulation_enabled"`

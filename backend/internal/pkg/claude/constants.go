@@ -44,13 +44,22 @@ const APIKeyBetaHeader = BetaClaudeCode + "," + BetaInterleavedThinking + "," + 
 // APIKeyHaikuBetaHeader Haiku 模型在 API-key 账号下使用的 anthropic-beta header（不包含 oauth / claude-code）
 const APIKeyHaikuBetaHeader = BetaInterleavedThinking
 
+// DefaultCLIVersion is the default Claude Code CLI version used when config
+// does not override it. Bump this when upstream claude-cli ships a new stable.
+const DefaultCLIVersion = "2.1.112"
+
+// DefaultStainlessPackageVersion is the Claude CLI SDK package version
+// observed in the upstream 2.1.112 client traffic.
+const DefaultStainlessPackageVersion = "0.81.0"
+
 // DefaultHeaders 是 Claude Code 客户端默认请求头。
+// 这是配置未设置时的 fallback 值；运行时应优先使用 BuildDefaultHeaders(cfg)。
 var DefaultHeaders = map[string]string{
 	// Keep these in sync with recent Claude CLI traffic to reduce the chance
 	// that Claude Code-scoped OAuth credentials are rejected as "non-CLI" usage.
-	"User-Agent":                                "claude-cli/2.1.22 (external, cli)",
+	"User-Agent":                                "claude-cli/" + DefaultCLIVersion + " (external, cli)",
 	"X-Stainless-Lang":                          "js",
-	"X-Stainless-Package-Version":               "0.70.0",
+	"X-Stainless-Package-Version":               DefaultStainlessPackageVersion,
 	"X-Stainless-OS":                            "Linux",
 	"X-Stainless-Arch":                          "arm64",
 	"X-Stainless-Runtime":                       "node",
@@ -59,6 +68,49 @@ var DefaultHeaders = map[string]string{
 	"X-Stainless-Timeout":                       "600",
 	"X-App":                                     "cli",
 	"Anthropic-Dangerous-Direct-Browser-Access": "true",
+}
+
+// ClientHeaderConfig 描述可配置的 Claude CLI 客户端指纹字段。
+// 所有字段为空字符串时退回 DefaultHeaders 中的对应值。
+type ClientHeaderConfig struct {
+	CLIVersion              string
+	StainlessLang           string
+	StainlessPackageVersion string
+	StainlessOS             string
+	StainlessArch           string
+	StainlessRuntime        string
+	StainlessRuntimeVersion string
+}
+
+// BuildDefaultHeaders 按配置构造 Claude Code 客户端默认请求头。
+// 任何为空的 cfg 字段会回退到 DefaultHeaders。
+func BuildDefaultHeaders(cfg ClientHeaderConfig) map[string]string {
+	headers := make(map[string]string, len(DefaultHeaders))
+	for k, v := range DefaultHeaders {
+		headers[k] = v
+	}
+	if v := cfg.CLIVersion; v != "" {
+		headers["User-Agent"] = "claude-cli/" + v + " (external, cli)"
+	}
+	if v := cfg.StainlessLang; v != "" {
+		headers["X-Stainless-Lang"] = v
+	}
+	if v := cfg.StainlessPackageVersion; v != "" {
+		headers["X-Stainless-Package-Version"] = v
+	}
+	if v := cfg.StainlessOS; v != "" {
+		headers["X-Stainless-OS"] = v
+	}
+	if v := cfg.StainlessArch; v != "" {
+		headers["X-Stainless-Arch"] = v
+	}
+	if v := cfg.StainlessRuntime; v != "" {
+		headers["X-Stainless-Runtime"] = v
+	}
+	if v := cfg.StainlessRuntimeVersion; v != "" {
+		headers["X-Stainless-Runtime-Version"] = v
+	}
+	return headers
 }
 
 // Model 表示一个 Claude 模型

@@ -109,6 +109,14 @@ type SystemSettings struct {
 	EnableFingerprintUnification bool // 是否统一 OAuth 账号的指纹头（默认 true）
 	EnableMetadataPassthrough    bool // 是否透传客户端原始 metadata（默认 false）
 	EnableCCHSigning             bool // 是否对 billing header cch 进行签名（默认 false）
+	EnableEnvScrub               bool // 清洗 system <env>/paths（默认 true）
+	EnableSystemReminderScrub    bool // 清洗 <system-reminder> 块（默认 true）
+	EnableBillingInject          bool // billing header 缺失时注入（默认 true）
+	EnableCCFingerprintV2        bool // 真 SHA256 cc_version 指纹（默认 true）
+	EnableResponseHeaderStrip    bool // 剥离响应头 gateway 指纹（默认 true）
+	EnableRemoteHeaderStrip      bool // 剥离 x-claude-remote-* + 重生成 x-client-request-id（默认 true）
+	EnableStrictValidator        bool // 严格校验 thinking/prefill（默认 false）
+	EnableTelemetryHeartbeat     bool // 主动 telemetry 心跳（默认 false）
 
 	// Web Search Emulation
 	WebSearchEmulationEnabled bool // 是否启用 web search 模拟

@@ -156,13 +156,65 @@ func (s *TelemetryRewriterService) rewriteEventData(body []byte, basePath string
 	// 4. Rewrite process field (randomize memory metrics)
 	body = s.rewriteProcessField(body, basePath+".process")
 
-	// 5. Delete leak fields
+	// 5. Canonicalize cross-account linkage fields that we cannot simply delete
+	// (upstream may treat their absence as anomalous). They get rewritten to
+	// deterministic per-identity values so an account always presents the
+	// same fingerprint across events.
+	if gjson.GetBytes(body, basePath+".hostname").Exists() {
+		body, _ = sjson.SetBytes(body, basePath+".hostname", canonicalHostname(s.cfg, identity))
+	}
+	if gjson.GetBytes(body, basePath+".session_id").Exists() {
+		body, _ = sjson.SetBytes(body, basePath+".session_id", canonicalSessionID(identity))
+	}
+
+	// 6. Delete leak fields (cross-account vectors we want gone entirely)
 	body = s.deleteLeakFields(body, basePath)
 
-	// 6. Rewrite additional_metadata (base64 JSON blob)
+	// 7. Rewrite additional_metadata (base64 JSON blob)
 	body = s.rewriteAdditionalMetadata(body, basePath+".additional_metadata")
 
 	return body
+}
+
+// canonicalHostname returns a stable hostname for the given identity. Prefers
+// the username segment of prompt_env.working_dir (mirrors zhima2api's
+// rewriter.ts:517 behavior: "/Users/alice/..." → "alice"). Falls back to a
+// generic literal when no working_dir is configured, since "empty hostname"
+// itself is a signal.
+func canonicalHostname(cfg *config.Config, identity config.TelemetryIdentityConfig) string {
+	if cfg != nil {
+		if wd := cfg.Telemetry.PromptEnv.WorkingDir; wd != "" {
+			parts := strings.Split(strings.TrimPrefix(wd, "/"), "/")
+			if len(parts) >= 2 && parts[1] != "" {
+				return parts[1]
+			}
+		}
+	}
+	if identity.DeviceID != "" {
+		// Short stable pseudo-hostname so different accounts never collide.
+		// 8 hex chars gives 32 bits of entropy — enough for the hundreds of
+		// accounts the gateway handles while staying human-shaped.
+		return "mac-" + identity.DeviceID[:8]
+	}
+	return "mac"
+}
+
+// canonicalSessionID derives a deterministic UUID-shaped identifier from the
+// account's canonical DeviceID. Upstream treats session_id as opaque; using
+// a per-identity stable value keeps events from an account correlated under
+// the gateway's canonical identity instead of the real client session.
+func canonicalSessionID(identity config.TelemetryIdentityConfig) string {
+	if identity.DeviceID == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("sub2api:telemetry-session:" + identity.DeviceID))
+	b := sum[:16]
+	// UUID v4: version=0100
+	b[6] = (b[6] & 0x0f) | 0x40
+	// Variant: 10xx
+	b[8] = (b[8] & 0x3f) | 0x80
+	h := hex.EncodeToString(b)
+	return h[:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:]
 }
 
 // buildCanonicalEnv returns the canonical env object that replaces the real env

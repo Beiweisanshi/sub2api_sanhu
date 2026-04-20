@@ -1,6 +1,8 @@
 package service
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"regexp"
 	"strings"
 
@@ -20,8 +22,10 @@ var (
 	promptWorkingDirRegex = regexp.MustCompile(`(?m)((?:Primary )?[Ww]orking directory:\s*)/\S+`)
 	// Matches home directory paths like /Users/xxx/ or /home/xxx/
 	homePathRegex = regexp.MustCompile(`/(?:Users|home)/[^/\s]+/`)
-	// Matches cc_version billing fingerprint: cc_version=X.Y.Z.abc
-	ccVersionRegex = regexp.MustCompile(`cc_version=[\d.]+\.[a-f0-9]{3}`)
+	// Matches cc_version billing fingerprint: cc_version=X.Y.Z with an optional
+	// 3-hex suffix (cc_version=X.Y.Z.abc). Anchors on whole semver triplet so
+	// partial suffixes (e.g. stale .000) are replaced cleanly.
+	ccVersionRegex = regexp.MustCompile(`cc_version=\d+\.\d+\.\d+(?:\.[0-9a-f]{3})?`)
 )
 
 // rewritePromptEnvBlock rewrites the <env> block fields in system prompt text.
@@ -86,20 +90,56 @@ func extractHomePrefix(path string) string {
 	return "/" + parts[1] + "/" + parts[2] + "/"
 }
 
-// rewriteCCVersion replaces cc_version billing fingerprint strings in prompt text.
-// cc_version=X.Y.Z.abc -> cc_version=<configured_version>.000
-func rewriteCCVersion(text string, version string) string {
-	return ccVersionRegex.ReplaceAllString(text, "cc_version="+version+".000")
+// rewriteCCVersion replaces cc_version billing fingerprint strings in prompt
+// text with the supplied version and 3-hex fingerprint suffix. When
+// fingerprint is empty it falls back to a random 3-hex value so multiple
+// rewrites do not collapse into a single across-account fingerprint.
+func rewriteCCVersion(text, version, fingerprint string) string {
+	suffix := normalizeCCFingerprint(fingerprint)
+	return ccVersionRegex.ReplaceAllString(text, "cc_version="+version+"."+suffix)
 }
 
 // RewriteBillingHeaderValue rewrites cc_version in x-anthropic-billing-header.
 // Empty canonical version means "leave the original value untouched".
-func RewriteBillingHeaderValue(value string, version string) string {
+// Empty fingerprint causes a random 3-hex suffix to be generated.
+func RewriteBillingHeaderValue(value, version, fingerprint string) string {
 	version = strings.TrimSpace(version)
 	if version == "" || value == "" {
 		return value
 	}
-	return rewriteCCVersion(value, version)
+	return rewriteCCVersion(value, version, fingerprint)
+}
+
+// normalizeCCFingerprint returns a valid 3-hex lowercase suffix. If the input
+// already matches that shape it is returned untouched; otherwise a random one
+// is generated. Keeps output deterministic when the caller passes a real
+// fingerprint computed from the request body.
+func normalizeCCFingerprint(fp string) string {
+	fp = strings.ToLower(strings.TrimSpace(fp))
+	if len(fp) == 3 {
+		valid := true
+		for _, r := range fp {
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			return fp
+		}
+	}
+	return randomCCFingerprint()
+}
+
+// randomCCFingerprint returns a random 3-hex-char suffix. Used as a fallback
+// when no message-derived fingerprint is available (e.g. telemetry forwarding
+// paths that have no messages[] array).
+func randomCCFingerprint() string {
+	var b [2]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "000"
+	}
+	return hex.EncodeToString(b[:])[:3]
 }
 
 // CanonicalClaudeCLIUserAgent returns the canonical Claude CLI user-agent used

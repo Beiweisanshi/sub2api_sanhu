@@ -12,17 +12,26 @@ import (
 
 func TestSyncBillingHeaderVersion(t *testing.T) {
 	tests := []struct {
-		name      string
-		body      string
-		userAgent string
-		wantSub   string // substring expected in result
-		unchanged bool   // expect body to remain the same
+		name        string
+		body        string
+		userAgent   string
+		fingerprint string
+		wantSub     string // substring expected in result
+		unchanged   bool   // expect body to remain the same
 	}{
 		{
-			name:      "replaces cc_version preserving message-derived suffix",
-			body:      `{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=00000;"},{"type":"text","text":"You are Claude Code.","cache_control":{"type":"ephemeral"}}],"messages":[]}`,
-			userAgent: "claude-cli/2.1.22 (external, cli)",
-			wantSub:   "cc_version=2.1.22.df2",
+			name:        "rewrites cc_version and suffix together",
+			body:        `{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=00000;"},{"type":"text","text":"You are Claude Code.","cache_control":{"type":"ephemeral"}}],"messages":[]}`,
+			userAgent:   "claude-cli/2.1.22 (external, cli)",
+			fingerprint: "a1b",
+			wantSub:     "cc_version=2.1.22.a1b",
+		},
+		{
+			name:        "adds suffix when original has none",
+			body:        `{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.81; cc_entrypoint=cli; cch=00000;"}],"messages":[]}`,
+			userAgent:   "claude-cli/2.1.22",
+			fingerprint: "c0d",
+			wantSub:     "cc_version=2.1.22.c0d",
 		},
 		{
 			name:      "no billing header in system",
@@ -48,17 +57,11 @@ func TestSyncBillingHeaderVersion(t *testing.T) {
 			userAgent: "",
 			unchanged: true,
 		},
-		{
-			name:      "version already matches",
-			body:      `{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.22; cc_entrypoint=cli; cch=00000;"}],"messages":[]}`,
-			userAgent: "claude-cli/2.1.22",
-			unchanged: true,
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := syncBillingHeaderVersion([]byte(tt.body), tt.userAgent)
+			result := syncBillingHeaderVersion([]byte(tt.body), tt.userAgent, tt.fingerprint)
 			if tt.unchanged {
 				assert.Equal(t, tt.body, string(result), "body should remain unchanged")
 			} else {
@@ -66,6 +69,84 @@ func TestSyncBillingHeaderVersion(t *testing.T) {
 				// Ensure old semver is gone
 				assert.NotContains(t, string(result), "cc_version=2.1.81")
 			}
+		})
+	}
+}
+
+func TestSyncBillingHeaderVersion_EmptyFingerprintRandomSuffix(t *testing.T) {
+	body := []byte(`{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.81; cc_entrypoint=cli; cch=00000;"}],"messages":[]}`)
+	result := syncBillingHeaderVersion(body, "claude-cli/2.1.22", "")
+	billing := gjson.GetBytes(result, "system.0.text").String()
+	require.Regexp(t, `cc_version=2\.1\.22\.[0-9a-f]{3};`, billing)
+}
+
+func TestInjectBillingHeaderIfMissing(t *testing.T) {
+	t.Run("inject prepends block when system is array without billing", func(t *testing.T) {
+		body := []byte(`{"system":[{"type":"text","text":"You are Claude Code."}],"messages":[]}`)
+		out := injectBillingHeaderIfMissing(body, "2.1.22", "a1b")
+
+		first := gjson.GetBytes(out, "system.0.text").String()
+		require.Contains(t, first, "x-anthropic-billing-header:")
+		require.Contains(t, first, "cc_version=2.1.22.a1b")
+		require.Contains(t, first, "cch=00000")
+		// Original block preserved at index 1
+		second := gjson.GetBytes(out, "system.1.text").String()
+		require.Equal(t, "You are Claude Code.", second)
+	})
+
+	t.Run("no-op when billing header already present", func(t *testing.T) {
+		original := `{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.22.abc; cch=00000;"}],"messages":[]}`
+		out := injectBillingHeaderIfMissing([]byte(original), "2.1.22", "abc")
+		require.Equal(t, original, string(out))
+	})
+
+	t.Run("string system: wrapped into array with billing first", func(t *testing.T) {
+		body := []byte(`{"system":"You are Claude Code.","messages":[]}`)
+		out := injectBillingHeaderIfMissing(body, "2.1.22", "a1b")
+
+		first := gjson.GetBytes(out, "system.0.text").String()
+		require.Contains(t, first, "x-anthropic-billing-header:")
+		second := gjson.GetBytes(out, "system.1.text").String()
+		require.Equal(t, "You are Claude Code.", second)
+	})
+
+	t.Run("missing system field: creates new array", func(t *testing.T) {
+		body := []byte(`{"messages":[]}`)
+		out := injectBillingHeaderIfMissing(body, "2.1.22", "a1b")
+		require.Contains(t, gjson.GetBytes(out, "system.0.text").String(), "x-anthropic-billing-header:")
+	})
+
+	t.Run("empty version: no-op", func(t *testing.T) {
+		body := []byte(`{"system":[{"type":"text","text":"hi"}]}`)
+		out := injectBillingHeaderIfMissing(body, "", "a1b")
+		require.Equal(t, string(body), string(out))
+	})
+
+	t.Run("empty fingerprint produces stable 000 suffix", func(t *testing.T) {
+		body := []byte(`{"messages":[]}`)
+		out := injectBillingHeaderIfMissing(body, "2.1.22", "")
+		text := gjson.GetBytes(out, "system.0.text").String()
+		// Deterministic: same input ⇒ same output, no randomness. Caller is
+		// expected to pass "" exactly when CCFingerprintV2 is off.
+		require.Contains(t, text, "cc_version=2.1.22.000;")
+	})
+}
+
+func TestHasBillingHeader(t *testing.T) {
+	cases := map[string]struct {
+		body string
+		want bool
+	}{
+		"array with billing":   {`{"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.22.abc;"}]}`, true},
+		"array without":        {`{"system":[{"type":"text","text":"You are Claude."}]}`, false},
+		"string billing":       {`{"system":"x-anthropic-billing-header: cc_version=2.1.22.abc;"}`, true},
+		"string plain":         {`{"system":"hello"}`, false},
+		"array of raw strings": {`{"system":["x-anthropic-billing-header: cc_version=2.1.22.abc;","tail"]}`, true},
+		"missing system":       {`{}`, false},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, tc.want, hasBillingHeader([]byte(tc.body)))
 		})
 	}
 }

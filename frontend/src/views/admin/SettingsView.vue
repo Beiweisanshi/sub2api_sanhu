@@ -1734,6 +1734,58 @@
               </div>
               <Toggle v-model="form.enable_cch_signing" />
             </div>
+
+            <!-- Env Scrub -->
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.gatewayForwarding.envScrub') }}
+                </label>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.gatewayForwarding.envScrubHint') }}
+                </p>
+              </div>
+              <Toggle v-model="form.enable_env_scrub" />
+            </div>
+
+            <!-- System Reminder Scrub -->
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.gatewayForwarding.systemReminderScrub') }}
+                </label>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.gatewayForwarding.systemReminderScrubHint') }}
+                </p>
+              </div>
+              <Toggle v-model="form.enable_system_reminder_scrub" />
+            </div>
+
+            <!-- Billing Inject -->
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.gatewayForwarding.billingInject') }}
+                </label>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.gatewayForwarding.billingInjectHint') }}
+                </p>
+              </div>
+              <Toggle v-model="form.enable_billing_inject" />
+            </div>
+
+            <!-- CC Fingerprint V2 -->
+            <div class="flex items-center justify-between">
+              <div>
+                <label class="text-sm font-medium text-gray-700 dark:text-gray-300">
+                  {{ t('admin.settings.gatewayForwarding.ccFingerprintV2') }}
+                </label>
+                <p class="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
+                  {{ t('admin.settings.gatewayForwarding.ccFingerprintV2Hint') }}
+                </p>
+              </div>
+              <Toggle v-model="form.enable_cc_fingerprint_v2" />
+            </div>
           </div>
         </div>
         <!-- Web Search Emulation -->
@@ -3082,6 +3134,10 @@ const form = reactive<SettingsForm>({
   enable_fingerprint_unification: true,
   enable_metadata_passthrough: false,
   enable_cch_signing: false,
+  enable_env_scrub: true,
+  enable_system_reminder_scrub: true,
+  enable_billing_inject: true,
+  enable_cc_fingerprint_v2: true,
   // Balance & quota notification
   balance_low_notify_enabled: false,
   balance_low_notify_threshold: 0,
@@ -3662,6 +3718,10 @@ async function saveSettings() {
       enable_fingerprint_unification: form.enable_fingerprint_unification,
       enable_metadata_passthrough: form.enable_metadata_passthrough,
       enable_cch_signing: form.enable_cch_signing,
+      enable_env_scrub: form.enable_env_scrub,
+      enable_system_reminder_scrub: form.enable_system_reminder_scrub,
+      enable_billing_inject: form.enable_billing_inject,
+      enable_cc_fingerprint_v2: form.enable_cc_fingerprint_v2,
       // Payment configuration
       payment_enabled: form.payment_enabled,
       payment_min_amount: Number(form.payment_min_amount) || 0,

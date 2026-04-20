@@ -183,6 +183,23 @@ func (h *GatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 
+	// 严格结构校验（thinking.signature / Claude 4.6 prefill）。
+	// 受 enable_strict_validator 开关控制，默认关闭以便灰度。本地 400 好过被
+	// 上游 400 之后计入账号错误预算，但规则如果误杀正版客户端会立刻影响
+	// 所有在线账号，所以明确走 opt-in。
+	//
+	// parsedReq 不缓存 messages[]，所以这里必须二次 json.Unmarshal。开销只在
+	// 开关打开时付出，属于可接受的 trade-off。
+	if isClaudeCodeClient && h.settingService != nil && h.settingService.GetGatewayForwardingSettings(c.Request.Context()).StrictValidator {
+		var bodyMap map[string]any
+		if err := json.Unmarshal(body, &bodyMap); err == nil {
+			if strictErr := service.ValidateMessagesStrict(bodyMap); strictErr != nil {
+				h.errorResponse(c, http.StatusBadRequest, strictErr.ErrorType, strictErr.Detail)
+				return
+			}
+		}
+	}
+
 	// 在请求上下文中记录 thinking 状态，供 Antigravity 最终模型 key 推导/模型维度限流使用
 	c.Request = c.Request.WithContext(service.WithThinkingEnabled(c.Request.Context(), parsedReq.ThinkingEnabled, h.metadataBridgeEnabled()))
 

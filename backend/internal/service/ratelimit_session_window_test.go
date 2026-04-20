@@ -17,6 +17,7 @@ type sessionWindowMockRepo struct {
 	sessionWindowCalls []swCall
 	updateExtraCalls   []ueCall
 	clearRateLimitIDs  []int64
+	setTempCalls       []setTempCall
 }
 
 var _ AccountRepository = (*sessionWindowMockRepo)(nil)
@@ -143,8 +144,15 @@ func (m *sessionWindowMockRepo) SetModelRateLimit(context.Context, int64, string
 func (m *sessionWindowMockRepo) SetOverloaded(context.Context, int64, time.Time) error {
 	panic("unexpected")
 }
-func (m *sessionWindowMockRepo) SetTempUnschedulable(context.Context, int64, time.Time, string) error {
-	panic("unexpected")
+type setTempCall struct {
+	ID     int64
+	Until  time.Time
+	Reason string
+}
+
+func (m *sessionWindowMockRepo) SetTempUnschedulable(_ context.Context, id int64, until time.Time, reason string) error {
+	m.setTempCalls = append(m.setTempCalls, setTempCall{ID: id, Until: until, Reason: reason})
+	return nil
 }
 func (m *sessionWindowMockRepo) BulkUpdate(context.Context, []int64, AccountBulkUpdate) (int64, error) {
 	panic("unexpected")
@@ -366,5 +374,91 @@ func TestUpdateSessionWindow_NoStatusHeader(t *testing.T) {
 
 	if len(repo.sessionWindowCalls) != 0 {
 		t.Errorf("expected no calls when status header absent, got %d", len(repo.sessionWindowCalls))
+	}
+}
+
+func TestApplyAnthropicPreemptiveCooldown_Triggers5h(t *testing.T) {
+	repo := &sessionWindowMockRepo{}
+	svc := newRateLimitServiceForTest(repo)
+
+	account := &Account{ID: 77}
+	resetUnix := time.Now().Add(2 * time.Hour).Unix()
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-status", "allowed_warning")
+	headers.Set("anthropic-ratelimit-unified-5h-reset", fmt.Sprintf("%d", resetUnix))
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.92")
+
+	svc.UpdateSessionWindow(context.Background(), account, headers)
+
+	if len(repo.setTempCalls) != 1 {
+		t.Fatalf("expected 1 SetTempUnschedulable call, got %d", len(repo.setTempCalls))
+	}
+	call := repo.setTempCalls[0]
+	if call.ID != 77 {
+		t.Errorf("expected account 77, got %d", call.ID)
+	}
+	if call.Until.Unix() != resetUnix {
+		t.Errorf("expected until=%d, got %d", resetUnix, call.Until.Unix())
+	}
+}
+
+func TestApplyAnthropicPreemptiveCooldown_BelowThreshold(t *testing.T) {
+	repo := &sessionWindowMockRepo{}
+	svc := newRateLimitServiceForTest(repo)
+
+	account := &Account{ID: 78}
+	resetUnix := time.Now().Add(2 * time.Hour).Unix()
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-status", "allowed")
+	headers.Set("anthropic-ratelimit-unified-5h-reset", fmt.Sprintf("%d", resetUnix))
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.85")
+
+	svc.UpdateSessionWindow(context.Background(), account, headers)
+
+	if len(repo.setTempCalls) != 0 {
+		t.Errorf("expected no cooldown below threshold, got %d calls", len(repo.setTempCalls))
+	}
+}
+
+func TestApplyAnthropicPreemptiveCooldown_7dCappedTo24h(t *testing.T) {
+	repo := &sessionWindowMockRepo{}
+	svc := newRateLimitServiceForTest(repo)
+
+	account := &Account{ID: 79}
+	// 7d reset 6 days out → should be capped to 24h
+	resetUnix := time.Now().Add(6 * 24 * time.Hour).Unix()
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-status", "allowed")
+	headers.Set("anthropic-ratelimit-unified-7d-reset", fmt.Sprintf("%d", resetUnix))
+	headers.Set("anthropic-ratelimit-unified-7d-utilization", "0.95")
+
+	svc.UpdateSessionWindow(context.Background(), account, headers)
+
+	if len(repo.setTempCalls) != 1 {
+		t.Fatalf("expected 1 SetTempUnschedulable call, got %d", len(repo.setTempCalls))
+	}
+	// until should be within 24h, not 6 days
+	delta := time.Until(repo.setTempCalls[0].Until)
+	if delta > 25*time.Hour || delta < 23*time.Hour {
+		t.Errorf("expected until within ~24h, got delta=%s", delta)
+	}
+}
+
+func TestApplyAnthropicPreemptiveCooldown_SkipsWhenAlreadyRateLimited(t *testing.T) {
+	repo := &sessionWindowMockRepo{}
+	svc := newRateLimitServiceForTest(repo)
+
+	rl := time.Now().Add(1 * time.Hour)
+	account := &Account{ID: 80, RateLimitResetAt: &rl}
+	resetUnix := time.Now().Add(2 * time.Hour).Unix()
+	headers := http.Header{}
+	headers.Set("anthropic-ratelimit-unified-5h-status", "allowed_warning")
+	headers.Set("anthropic-ratelimit-unified-5h-reset", fmt.Sprintf("%d", resetUnix))
+	headers.Set("anthropic-ratelimit-unified-5h-utilization", "0.95")
+
+	svc.UpdateSessionWindow(context.Background(), account, headers)
+
+	if len(repo.setTempCalls) != 0 {
+		t.Errorf("expected no cooldown when already rate limited, got %d calls", len(repo.setTempCalls))
 	}
 }

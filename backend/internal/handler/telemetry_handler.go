@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/service"
@@ -22,6 +23,7 @@ type TelemetryHandler struct {
 	claudeTokenProvider *service.ClaudeTokenProvider
 	accountRepo         service.AccountRepository
 	httpUpstream        service.HTTPUpstream
+	heartbeatService    *service.TelemetryHeartbeatService
 	cfg                 *config.Config
 }
 
@@ -31,6 +33,7 @@ func NewTelemetryHandler(
 	claudeTokenProvider *service.ClaudeTokenProvider,
 	accountRepo service.AccountRepository,
 	httpUpstream service.HTTPUpstream,
+	heartbeatService *service.TelemetryHeartbeatService,
 	cfg *config.Config,
 ) *TelemetryHandler {
 	return &TelemetryHandler{
@@ -38,8 +41,69 @@ func NewTelemetryHandler(
 		claudeTokenProvider: claudeTokenProvider,
 		accountRepo:         accountRepo,
 		httpUpstream:        httpUpstream,
+		heartbeatService:    heartbeatService,
 		cfg:                 cfg,
 	}
+}
+
+// EvalFeatures handles GET/POST /api/eval/features. Returns a realistic
+// GrowthBook feature payload so Claude Code treats the gateway's response as
+// a normal CLI session. Returning empty {} (the naive pass-through outcome)
+// is itself a signal — real CLI sessions always get populated flags. Values
+// mirror zhima2api cc-gateway telemetry.ts buildRealisticFeatures().
+func (h *TelemetryHandler) EvalFeatures(c *gin.Context) {
+	if h.cfg == nil || !h.cfg.Telemetry.Enabled {
+		c.Status(http.StatusOK)
+		return
+	}
+	version := strings.TrimSpace(h.cfg.Telemetry.CanonicalEnv.Version)
+	if version == "" {
+		version = "2.1.22"
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{
+		"features": gin.H{
+			"tengu_version_config": gin.H{
+				"defaultValue": gin.H{
+					"minimumSupportedVersion": "1.0.0",
+					"latestVersion":           version,
+				},
+			},
+			"tengu_data_collection_sampling_config": gin.H{
+				"defaultValue": gin.H{
+					"sessionSamplingRate": 0.01,
+					"eventSamplingRate":   0.1,
+				},
+			},
+			"tengu_enable_prompt_caching":    gin.H{"defaultValue": true},
+			"tengu_enable_extended_thinking": gin.H{"defaultValue": true},
+			"tengu_enable_mcp":               gin.H{"defaultValue": true},
+			"tengu_enable_computer_use":      gin.H{"defaultValue": false},
+			"tengu_max_output_tokens_config": gin.H{
+				"defaultValue": gin.H{
+					"maxOutputTokens":                  16000,
+					"maxOutputTokensExtendedThinking":  32000,
+				},
+			},
+			"tengu_haiku_model_config":  gin.H{"defaultValue": gin.H{"modelId": "claude-haiku-4-5-20251001"}},
+			"tengu_sonnet_model_config": gin.H{"defaultValue": gin.H{"modelId": "claude-sonnet-4-5-20250514"}},
+			"tengu_opus_model_config":   gin.H{"defaultValue": gin.H{"modelId": "claude-opus-4-5-20250514"}},
+		},
+		"dateUpdated": time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+// MetricsEnabled handles GET/POST /api/metrics_enabled. CLI requires this
+// endpoint to respond {enabled:true}; absence / 404 suppresses all other
+// telemetry channels and makes sessions look inert. Kept separate from the
+// forwarding path because there is no rewriting needed.
+func (h *TelemetryHandler) MetricsEnabled(c *gin.Context) {
+	if h.cfg == nil || !h.cfg.Telemetry.Enabled {
+		c.Status(http.StatusOK)
+		return
+	}
+	c.Header("Cache-Control", "no-store")
+	c.JSON(http.StatusOK, gin.H{"enabled": true})
 }
 
 // EventLoggingBatch handles POST /api/event_logging/batch
@@ -138,7 +202,9 @@ func (h *TelemetryHandler) proxyTelemetry(c *gin.Context, rewrite func([]byte, c
 	if version := strings.TrimSpace(h.cfg.Telemetry.CanonicalEnv.Version); version != "" {
 		upstreamReq.Header.Set("User-Agent", service.CanonicalClaudeCLIUserAgent(version))
 		if billingHeader := upstreamReq.Header.Get("X-Anthropic-Billing-Header"); billingHeader != "" {
-			upstreamReq.Header.Set("X-Anthropic-Billing-Header", service.RewriteBillingHeaderValue(billingHeader, version))
+			// Telemetry paths have no messages[] to derive a real fingerprint from;
+			// pass empty so RewriteBillingHeaderValue emits a random 3-hex suffix.
+			upstreamReq.Header.Set("X-Anthropic-Billing-Header", service.RewriteBillingHeaderValue(billingHeader, version, ""))
 		}
 	}
 
@@ -154,6 +220,13 @@ func (h *TelemetryHandler) proxyTelemetry(c *gin.Context, rewrite func([]byte, c
 		return
 	}
 	defer resp.Body.Close()
+
+	// 捕获 event_logging/batch 样本，供心跳服务重放（仅在成功转发时）
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 && h.heartbeatService != nil {
+		if p := c.Request.URL.Path; strings.Contains(p, "event_logging") {
+			h.heartbeatService.CaptureSample(account.ID, body, upstreamReq.Header.Get("Content-Type"), p)
+		}
+	}
 
 	// Stream upstream response back to client
 	for key, vals := range resp.Header {
