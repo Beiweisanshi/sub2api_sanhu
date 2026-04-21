@@ -14,13 +14,10 @@
           <div class="mx-auto mb-4 flex h-20 w-20 items-center justify-center">
             <img :src="siteLogo || '/logo.png'" alt="芝麻 ZHIMA" class="h-full w-full object-contain" />
           </div>
-          <h1 class="mb-2 text-4xl font-bold leading-none text-claude-text text-breathe">
+          <h1 class="text-4xl font-bold leading-none text-claude-text text-breathe">
             <span class="font-serif align-baseline">芝麻</span>
             <span class="ml-2 font-sans font-medium align-baseline text-[0.85em] text-[#D97048]">ZHIMA</span>
           </h1>
-          <p class="mt-2 text-sm text-claude-muted">
-            {{ siteSubtitle }}
-          </p>
         </template>
       </div>
 
@@ -47,7 +44,6 @@ import { sanitizeUrl } from '@/utils/url'
 const appStore = useAppStore()
 
 const siteLogo = computed(() => sanitizeUrl(appStore.siteLogo || '', { allowRelative: true, allowDataUrl: true }))
-const siteSubtitle = computed(() => appStore.cachedPublicSettings?.site_subtitle || 'Subscription to API Conversion Platform')
 const settingsLoaded = computed(() => appStore.publicSettingsLoaded)
 
 const currentYear = computed(() => new Date().getFullYear())
@@ -56,9 +52,3 @@ onMounted(() => {
   appStore.fetchPublicSettings()
 })
 </script>
-
-<style scoped>
-.text-gradient {
-  @apply bg-gradient-to-r from-primary-600 to-primary-500 bg-clip-text text-transparent;
-}
-</style>
