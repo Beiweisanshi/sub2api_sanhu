@@ -17,8 +17,8 @@ set -euo pipefail
 # ============================================================
 # 配置变量
 # ============================================================
-REMOTE_HOST="216.40.86.130"
-REMOTE_PORT="22"
+REMOTE_HOST="38.34.16.212"
+REMOTE_PORT="16437"
 REMOTE_USER="root"
 INSTALL_DIR="/opt/sub2api"
 SERVICE_NAME="sub2api"
@@ -85,6 +85,19 @@ build_backend() {
         || error "后端编译失败"
     cd "$SCRIPT_DIR"
     success "后端编译完成: $BACKEND_DIR/$BINARY_NAME"
+
+    # mkx: UPX 压缩二进制，100MB 级别可压到 30MB 左右，显著加快上传 (2026-04-21)
+    if command -v upx &>/dev/null; then
+        if upx --test "$BACKEND_DIR/$BINARY_NAME" &>/dev/null; then
+            info "二进制已压缩，跳过 UPX"
+        else
+            info "UPX 压缩二进制..."
+            upx -1 "$BACKEND_DIR/$BINARY_NAME" || warn "UPX 压缩失败，使用原始二进制"
+        fi
+        success "当前大小: $(du -sh "$BACKEND_DIR/$BINARY_NAME" | cut -f1)"
+    else
+        warn "未找到 upx，跳过压缩（brew install upx 可安装）"
+    fi
 }
 
 # ============================================================
@@ -94,25 +107,49 @@ upload() {
     local binary="$BACKEND_DIR/$BINARY_NAME"
     [ -f "$binary" ] || error "二进制文件不存在: $binary"
 
-    info "上传二进制到 $REMOTE_HOST (临时文件)..."
-    $SCP_CMD "$binary" "${REMOTE_USER}@${REMOTE_HOST}:${INSTALL_DIR}/${BINARY_NAME}.new" \
-        || error "上传失败"
+    # mkx: 预建远端目录，确保 migrations 目标路径存在 (2026-04-21)
+    $SSH_CMD "mkdir -p $INSTALL_DIR/migrations"
+
+    # mkx: 二进制上传与 migrations 并行，缩短总上传时间 (2026-04-21)
+    info "并行上传二进制 + migrations 到 $REMOTE_HOST..."
+
+    local rsync_ssh="ssh -p $REMOTE_PORT -o StrictHostKeyChecking=no -o ConnectTimeout=10"
+
+    # 二进制上传（后台）
+    if command -v rsync &>/dev/null; then
+        rsync -az --progress -e "$rsync_ssh" \
+            "$binary" "${REMOTE_USER}@${REMOTE_HOST}:${INSTALL_DIR}/${BINARY_NAME}.new" &
+    else
+        $SCP_CMD "$binary" "${REMOTE_USER}@${REMOTE_HOST}:${INSTALL_DIR}/${BINARY_NAME}.new" &
+    fi
+    local binary_pid=$!
+
+    # migrations 上传（后台）
+    local migrations_dir="$BACKEND_DIR/migrations"
+    local migrations_pid=""
+    if [ -d "$migrations_dir" ]; then
+        if command -v rsync &>/dev/null; then
+            rsync -az -e "$rsync_ssh" \
+                "$migrations_dir/" "${REMOTE_USER}@${REMOTE_HOST}:${INSTALL_DIR}/migrations/" &
+        else
+            $SCP_CMD -r "$migrations_dir/"* "${REMOTE_USER}@${REMOTE_HOST}:${INSTALL_DIR}/migrations/" &
+        fi
+        migrations_pid=$!
+    fi
+
+    # 等待两个任务完成
+    wait $binary_pid || error "二进制上传失败"
+    if [ -n "$migrations_pid" ]; then
+        wait $migrations_pid || warn "migrations 同步失败（可能无新文件）"
+        success "migrations 同步完成"
+    fi
+
     # mkx: 等待远程 sftp-server 释放文件描述符，避免 ETXTBSY (2026-02-11)
     $SSH_CMD "chmod +x $INSTALL_DIR/$BINARY_NAME.new && \
         chown $SERVICE_USER:$SERVICE_USER $INSTALL_DIR/$BINARY_NAME.new && \
         sync && \
         for i in 1 2 3 4 5; do fuser $INSTALL_DIR/$BINARY_NAME.new >/dev/null 2>&1 || break; sleep 1; done"
     success "上传完成"
-
-    # migrations 也在服务运行期间同步
-    local migrations_dir="$BACKEND_DIR/migrations"
-    if [ -d "$migrations_dir" ]; then
-        info "同步 migrations..."
-        $SSH_CMD "mkdir -p $INSTALL_DIR/migrations"
-        $SCP_CMD -r "$migrations_dir/"* "${REMOTE_USER}@${REMOTE_HOST}:${INSTALL_DIR}/migrations/" \
-            || warn "migrations 同步失败（可能无新文件）"
-        success "migrations 同步完成"
-    fi
 }
 
 # ============================================================
@@ -121,9 +158,10 @@ upload() {
 swap_and_restart() {
     info "停服务 → 原子替换 → 拉起服务..."
     # mkx: 停服务后等待进程完全退出，再做原子替换 (2026-02-11)
-    $SSH_CMD "systemctl stop $SERVICE_NAME && \
+    # mkx: 旧二进制不存在时（首次部署）跳过备份步骤，避免 mv 报错 (2026-04-21)
+    $SSH_CMD "systemctl stop $SERVICE_NAME 2>/dev/null || true && \
         while fuser $INSTALL_DIR/$BINARY_NAME >/dev/null 2>&1; do sleep 0.5; done && \
-        mv $INSTALL_DIR/$BINARY_NAME $INSTALL_DIR/${BINARY_NAME}.backup && \
+        [ -f $INSTALL_DIR/$BINARY_NAME ] && mv $INSTALL_DIR/$BINARY_NAME $INSTALL_DIR/${BINARY_NAME}.backup || true && \
         mv $INSTALL_DIR/${BINARY_NAME}.new $INSTALL_DIR/$BINARY_NAME && \
         systemctl start $SERVICE_NAME" \
         || error "替换或重启失败"
@@ -274,6 +312,9 @@ usage() {
     echo "  --setup-env    为已有服务器补齐 .env（生成 TOTP_ENCRYPTION_KEY）"
     echo "  --build-only   仅编译不部署"
     echo "  --skip-build   跳过编译，仅部署已有二进制"
+    echo "  --host HOST    覆盖目标服务器地址（默认: $REMOTE_HOST）"
+    echo "  --port PORT    覆盖 SSH 端口（默认: $REMOTE_PORT）"
+    echo "  --user USER    覆盖 SSH 用户名（默认: $REMOTE_USER）"
     echo "  -h, --help     显示帮助"
 }
 
@@ -292,10 +333,18 @@ main() {
             --setup-env)  do_setup_env=true; do_build=false; do_deploy=false; shift ;;
             --build-only) do_deploy=false; shift ;;
             --skip-build) do_build=false; shift ;;
+            --host)       REMOTE_HOST="$2"; shift 2 ;;
+            --port)       REMOTE_PORT="$2"; shift 2 ;;
+            --user)       REMOTE_USER="$2"; shift 2 ;;
             -h|--help)    usage; exit 0 ;;
             *) error "未知参数: $1" ;;
         esac
     done
+
+    # mkx: 参数解析完成后重建 SSH/SCP 命令，使覆盖的 host/port/user 生效 (2026-04-21)
+    SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10 -p $REMOTE_PORT"
+    SSH_CMD="ssh $SSH_OPTS ${REMOTE_USER}@${REMOTE_HOST}"
+    SCP_CMD="scp -P $REMOTE_PORT -o StrictHostKeyChecking=no"
 
     echo ""
     echo "=========================================="
