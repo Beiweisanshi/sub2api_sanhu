@@ -374,7 +374,7 @@ const appStore = useAppStore()
 
 // ==================== Site Settings (same as HomeView) ====================
 
-const siteName = computed(() => appStore.cachedPublicSettings?.site_name || appStore.siteName || 'Sub2API')
+const siteName = computed(() => appStore.cachedPublicSettings?.site_name || appStore.siteName || '芝麻 ZHIMA')
 const siteLogo = computed(() => appStore.cachedPublicSettings?.site_logo || appStore.siteLogo || '')
 const docUrl = computed(() => appStore.cachedPublicSettings?.doc_url || appStore.docUrl || '')
 const githubUrl = 'https://github.com/Wei-Shaw/sub2api'
@@ -441,8 +441,8 @@ function getDateParams(): string {
 
 const CIRCUMFERENCE = 2 * Math.PI * 68
 const RING_GRADIENTS = [
- { from: '#D96C4A', to: '#E49F81' },
- { from: '#9C422C', to: '#D96C4A' },
+ { from: '#C96442', to: '#DCA589' },
+ { from: '#934328', to: '#C96442' },
  { from: '#B46A4A', to: '#E2A984' },
  { from: '#C58A5F', to: '#F1CFAE' },
 ]
@@ -824,8 +824,8 @@ onUnmounted(() => {
  transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
 .input-ring:focus {
- box-shadow: 0 0 0 3px rgba(217, 108, 74, 0.18);
- border-color: #d96c4a;
+ box-shadow: 0 0 0 3px rgba(201, 100, 66, 0.15);
+ border-color: #C96442;
  outline: none;
 }
 

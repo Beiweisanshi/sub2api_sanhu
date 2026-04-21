@@ -147,8 +147,8 @@ export function useSwipeSelect(
     marqueeEl = document.createElement('div')
     Object.assign(marqueeEl.style, {
       position: 'fixed',
-      background: 'rgba(217, 108, 74, 0.12)',
-      border: '1.5px solid rgba(217, 108, 74, 0.35)',
+      background: 'rgba(201, 100, 66, 0.10)',
+      border: '1.5px solid rgba(201, 100, 66, 0.30)',
       borderRadius: '4px',
       pointerEvents: 'none',
       zIndex: '9999',

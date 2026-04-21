@@ -11,15 +11,14 @@
     <div class="relative z-10 w-full max-w-md">
       <div class="mb-8 text-center reveal active">
         <template v-if="settingsLoaded">
-          <div
-            class="mb-4 inline-flex h-16 w-16 items-center justify-center overflow-hidden rounded-2xl border border-claude-border bg-white shadow-glow"
-          >
-            <img :src="siteLogo || '/logo.png'" alt="Logo" class="h-full w-full object-contain" />
+          <div class="mx-auto mb-4 flex h-20 w-20 items-center justify-center">
+            <img :src="siteLogo || '/logo.png'" alt="芝麻 ZHIMA" class="h-full w-full object-contain" />
           </div>
-          <h1 class="mb-2 font-serif text-3xl font-bold text-claude-text text-breathe">
-            <span class="text-primary-500">{{ siteName.charAt(0) }}</span>{{ siteName.slice(1) }}
+          <h1 class="mb-2 text-4xl font-bold leading-none text-claude-text text-breathe">
+            <span class="font-serif align-baseline">芝麻</span>
+            <span class="ml-2 font-sans align-baseline text-[0.85em] text-primary-500">ZHIMA</span>
           </h1>
-          <p class="text-sm text-claude-muted">
+          <p class="mt-2 text-sm text-claude-muted">
             {{ siteSubtitle }}
           </p>
         </template>
@@ -34,7 +33,7 @@
       </div>
 
       <div class="mt-8 text-center text-xs text-gray-500">
-        &copy; {{ currentYear }} {{ siteName }}. All rights reserved.
+        &copy; {{ currentYear }} 芝麻 ZHIMA. All rights reserved.
       </div>
     </div>
   </div>
@@ -47,7 +46,6 @@ import { sanitizeUrl } from '@/utils/url'
 
 const appStore = useAppStore()
 
-const siteName = computed(() => appStore.siteName || 'Sub2API')
 const siteLogo = computed(() => sanitizeUrl(appStore.siteLogo || '', { allowRelative: true, allowDataUrl: true }))
 const siteSubtitle = computed(() => appStore.cachedPublicSettings?.site_subtitle || 'Subscription to API Conversion Platform')
 const settingsLoaded = computed(() => appStore.publicSettingsLoaded)
