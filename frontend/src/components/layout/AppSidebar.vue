@@ -16,7 +16,7 @@
  <div class="sidebar-brand" :class="{ 'sidebar-brand-collapsed': sidebarCollapsed }" :aria-hidden="sidebarCollapsed ? 'true' : 'false'">
  <span class="sidebar-brand-title text-lg font-bold">
  <span class="font-serif align-baseline text-claude-text">芝麻</span>
- <span class="ml-1.5 font-sans align-baseline text-[0.85em] text-primary-500">ZHIMA</span>
+ <span class="ml-1.5 font-sans font-medium align-baseline text-[0.85em] text-[#D97048]">ZHIMA</span>
  </span>
  <!-- Version Badge -->
  <VersionBadge :version="siteVersion" />

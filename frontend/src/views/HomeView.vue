@@ -102,7 +102,7 @@
  class="mb-4 text-4xl font-bold leading-none text-claude-text text-breathe md:text-5xl lg:text-6xl"
  >
  <span class="font-serif align-baseline">芝麻</span>
- <span class="ml-2 font-sans align-baseline text-[0.85em] text-primary-500">ZHIMA</span>
+ <span class="ml-2 font-sans font-medium align-baseline text-[0.85em] text-[#D97048]">ZHIMA</span>
  </h1>
  <p class="mb-8 text-lg text-claude-muted md:text-xl">
  {{ siteSubtitle }}

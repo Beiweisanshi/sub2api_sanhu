@@ -26,7 +26,7 @@
  </div>
  <span class="text-sm font-semibold tracking-tight">
  <span class="font-serif align-baseline text-claude-text">芝麻</span>
- <span class="ml-1 font-sans align-baseline text-[0.85em] text-primary-500">ZHIMA</span>
+ <span class="ml-1 font-sans font-medium align-baseline text-[0.85em] text-[#D97048]">ZHIMA</span>
  </span>
  </router-link>
 
