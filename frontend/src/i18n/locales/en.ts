@@ -2516,6 +2516,12 @@ export default {
           hint: 'Forward requests to a custom relay service. Proxy URL will be passed as a query parameter.',
           urlHint: 'Relay service URL (e.g., https://relay.example.com)',
         },
+        usagePercentLimit: {
+          label: 'Usage Percentage Limit',
+          hint: 'Stop scheduling this account when its usage percentage reaches the threshold. 0 or empty means no limit.',
+          placeholder: '80',
+          unit: '%',
+        },
         clientAffinity: {
           label: 'Client Affinity Scheduling',
           hint: 'When enabled, new sessions prefer accounts previously used by this client to reduce account switching'

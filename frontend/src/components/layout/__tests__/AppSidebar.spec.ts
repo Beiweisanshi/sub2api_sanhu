@@ -1,3 +1,8 @@
+/**
+ * 作者：mkx
+ * 日期：2026-04-21
+ * 变更说明：修正侧栏样式测试中的正则表达式写法以通过静态检查
+ */
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -21,7 +26,7 @@ describe('AppSidebar custom SVG styles', () => {
 
 describe('AppSidebar header styles', () => {
   it('does not clip the version badge dropdown', () => {
-    const sidebarHeaderBlockMatch = styleSource.match(/\.sidebar-header\s*\{[\s\S]*?\n  \}/)
+    const sidebarHeaderBlockMatch = styleSource.match(/\.sidebar-header\s*\{[\s\S]*?\n {2}\}/)
     const sidebarBrandBlockMatch = componentSource.match(/\.sidebar-brand\s*\{[\s\S]*?\n\}/)
 
     expect(sidebarHeaderBlockMatch).not.toBeNull()

@@ -1,3 +1,8 @@
+/**
+ * 作者：mkx
+ * 日期：2026-04-21
+ * 变更说明：同步暖色图表色板后的模型分布图测试断言。
+ */
 import { describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 
@@ -157,8 +162,8 @@ describe('ModelDistributionChart', () => {
       'Others',
     ])
     expect(chartData.datasets[0].data).toEqual([12, 8, 10])
-    expect(chartData.datasets[0].backgroundColor[0]).toBe('#3b82f6')
-    expect(chartData.datasets[0].backgroundColor[2]).toBe('#94a3b8')
+    expect(chartData.datasets[0].backgroundColor[0]).toBe('#D96C4A')
+    expect(chartData.datasets[0].backgroundColor[2]).toBe('#8C8578')
     expect(chartData.datasets[0].backgroundColor[2]).not.toBe(chartData.datasets[0].backgroundColor[0])
 
     const rows = wrapper.findAll('tbody tr')

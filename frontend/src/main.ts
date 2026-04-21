@@ -1,3 +1,8 @@
+/**
+ * 作者：mkx
+ * 日期：2026-04-21
+ * 变更说明：统一前端主题初始化为 Claude 暖色浅色模式，避免运行时挂载 dark class
+ */
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
@@ -7,15 +12,11 @@ import { useAppStore } from '@/stores/app'
 import './style.css'
 
 function initThemeClass() {
-  const savedTheme = localStorage.getItem('theme')
-  const shouldUseDark =
-    savedTheme === 'dark' ||
-    (!savedTheme && window.matchMedia('(prefers-color-scheme: dark)').matches)
-  document.documentElement.classList.toggle('dark', shouldUseDark)
+  document.documentElement.classList.remove('dark')
 }
 
 async function bootstrap() {
-  // Apply theme class globally before app mount to keep all routes consistent.
+  // 在应用启动前强制移除暗色类，避免旧主题缓存影响暖色改造后的样式表现。
   initThemeClass()
 
   const app = createApp(App)

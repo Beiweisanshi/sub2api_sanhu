@@ -1,7 +1,7 @@
 /**
- * Shared URL builder for iframe-embedded pages.
- * Used by PurchaseSubscriptionView and CustomPageView to build consistent URLs
- * with user_id, token, theme, lang, ui_mode, src_host, and src parameters.
+ * 作者：mkx
+ * 日期：2026-04-21
+ * 变更说明：固定嵌入页主题参数为浅色，移除暖色主题改造后的暗色探测残留。
  */
 
 const EMBEDDED_USER_ID_QUERY_KEY = 'user_id'
@@ -46,6 +46,5 @@ export function buildEmbeddedUrl(
 }
 
 export function detectTheme(): 'light' | 'dark' {
-  if (typeof document === 'undefined') return 'light'
-  return document.documentElement.classList.contains('dark') ? 'dark' : 'light'
+  return 'light'
 }

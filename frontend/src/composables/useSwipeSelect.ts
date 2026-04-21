@@ -1,3 +1,8 @@
+/**
+ * 作者：mkx
+ * 日期：2026-04-21
+ * 变更说明：将框选高亮与遮罩颜色收敛到 Claude 暖色主题，并补充头部注释规范。
+ */
 import { ref, onMounted, onUnmounted, type Ref } from 'vue'
 import type { Virtualizer } from '@tanstack/vue-virtual'
 
@@ -140,11 +145,10 @@ export function useSwipeSelect(
   function createMarquee() {
     removeMarquee() // defensive: remove any stale marquee
     marqueeEl = document.createElement('div')
-    const isDark = document.documentElement.classList.contains('dark')
     Object.assign(marqueeEl.style, {
       position: 'fixed',
-      background: isDark ? 'rgba(96, 165, 250, 0.15)' : 'rgba(59, 130, 246, 0.12)',
-      border: isDark ? '1.5px solid rgba(96, 165, 250, 0.5)' : '1.5px solid rgba(59, 130, 246, 0.4)',
+      background: 'rgba(217, 108, 74, 0.12)',
+      border: '1.5px solid rgba(217, 108, 74, 0.35)',
       borderRadius: '4px',
       pointerEvents: 'none',
       zIndex: '9999',

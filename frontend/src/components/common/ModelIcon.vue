@@ -1,3 +1,4 @@
+<!-- 作者：mkx | 日期：2026-04-21 | 变更：同步模型图标渐变与主题辅助色到 Claude 暖色体系 -->
 <template>
   <svg
     v-if="iconInfo"
@@ -270,7 +271,7 @@ const iconInfo = computed(() => iconKey.value ? iconData[iconKey.value] : null)
   align-items: center;
   justify-content: center;
   border-radius: 4px;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  background: linear-gradient(135deg, #703020, #9C422C);
   color: white;
   font-weight: 600;
   flex-shrink: 0;

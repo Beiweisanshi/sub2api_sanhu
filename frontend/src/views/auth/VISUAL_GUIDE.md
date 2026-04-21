@@ -1,3 +1,4 @@
+<!-- 作者：mkx | 日期：2026-04-21 | 变更：移除认证视图文档中的暗色模式类名示例以配合全站主题改造 -->
 # Authentication Views Visual Guide
 
 This document describes the visual design and layout of the authentication views.
@@ -543,9 +544,9 @@ animation: spin 1s linear infinite;
 
 ```css
 /* Example dark mode colors (not implemented yet) */
-dark:bg-gray-900
-dark:text-white
-dark:border-gray-700
+bg-gray-900
+text-white
+border-gray-700
 ```
 
 ## Performance Metrics

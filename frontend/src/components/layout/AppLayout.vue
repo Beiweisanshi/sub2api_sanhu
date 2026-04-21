@@ -1,21 +1,15 @@
+<!-- 作者：mkx | 日期：2026-04-21 | 变更：主应用布局改为纯米白色背景，移除橙色渐变/光斑/网格装饰层 -->
 <template>
-  <div class="min-h-screen bg-gray-50 dark:bg-dark-950">
-    <!-- Background Decoration -->
-    <div class="pointer-events-none fixed inset-0 bg-mesh-gradient"></div>
-
-    <!-- Sidebar -->
+  <div class="relative min-h-screen overflow-hidden bg-claude-bg text-claude-text">
     <AppSidebar />
 
-    <!-- Main Content Area -->
     <div
-      class="relative min-h-screen transition-all duration-300"
+      class="relative z-10 min-h-screen transition-all duration-300"
       :class="[sidebarCollapsed ? 'lg:ml-[72px]' : 'lg:ml-64']"
     >
-      <!-- Header -->
       <AppHeader />
 
-      <!-- Main Content -->
-      <main class="p-4 md:p-6 lg:p-8">
+      <main class="relative z-10 p-4 md:p-6 lg:p-8">
         <slot />
       </main>
     </div>
@@ -37,9 +31,10 @@ const authStore = useAuthStore()
 const sidebarCollapsed = computed(() => appStore.sidebarCollapsed)
 const isAdmin = computed(() => authStore.user?.role === 'admin')
 
+// 作者：mkx | 日期：2026-04-21 | 变更：关闭新手引导自动弹出，保留 Header 手动回放入口
 const { replayTour } = useOnboardingTour({
   storageKey: isAdmin.value ? 'admin_guide' : 'user_guide',
-  autoStart: true
+  autoStart: false
 })
 
 const onboardingStore = useOnboardingStore()

@@ -2659,6 +2659,12 @@ export default {
           hint: '启用后将请求转发到自定义中继服务，代理地址将作为 URL 参数传递给中继服务',
           urlHint: '中继服务地址（如 https://relay.example.com）',
         },
+        usagePercentLimit: {
+          label: '用量百分比限额',
+          hint: '当账号用量百分比达到阈值时停止调度该账号。0 或留空表示不限制。',
+          placeholder: '80',
+          unit: '%',
+        },
         clientAffinity: {
           label: '客户端亲和调度',
           hint: '启用后，新会话会优先调度到该客户端之前使用过的账号，避免频繁切换账号'

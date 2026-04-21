@@ -756,6 +756,9 @@ export interface Account {
   custom_base_url_enabled?: boolean | null
   custom_base_url?: string | null
 
+  // 用量百分比限额（仅 Anthropic OAuth/SetupToken 账号有效）
+  usage_percent_limit?: number | null
+
   // API Key 账号配额限制
   quota_limit?: number | null
   quota_used?: number | null

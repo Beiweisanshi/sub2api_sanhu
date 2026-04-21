@@ -1,31 +1,32 @@
+<!-- 作者：mkx | 日期：2026-04-21 | 变更：批量清理 Tailwind 暗色变体类名并同步补充暖色主题改造注释 -->
 <template>
-  <AppLayout>
-    <div class="mx-auto max-w-4xl space-y-6">
-      <div class="grid grid-cols-1 gap-6 sm:grid-cols-3">
-        <StatCard :title="t('profile.accountBalance')" :value="formatCurrency(user?.balance || 0)" :icon="WalletIcon" icon-variant="success" />
-        <StatCard :title="t('profile.concurrencyLimit')" :value="user?.concurrency || 0" :icon="BoltIcon" icon-variant="warning" />
-        <StatCard :title="t('profile.memberSince')" :value="formatDate(user?.created_at || '', { year: 'numeric', month: 'long' })" :icon="CalendarIcon" icon-variant="primary" />
-      </div>
-      <ProfileInfoCard :user="user" />
-      <div v-if="contactInfo" class="card border-primary-200 bg-primary-50 dark:bg-primary-900/20 p-6">
-        <div class="flex items-center gap-4">
-          <div class="p-3 bg-primary-100 rounded-xl text-primary-600"><Icon name="chat" size="lg" /></div>
-          <div><h3 class="font-semibold text-primary-800 dark:text-primary-200">{{ t('common.contactSupport') }}</h3><p class="text-sm font-medium">{{ contactInfo }}</p></div>
-        </div>
-      </div>
-      <ProfileEditForm :initial-username="user?.username || ''" />
-      <ProfileBalanceNotifyCard
-        v-if="user && balanceLowNotifyEnabled"
-        :enabled="user.balance_notify_enabled ?? true"
-        :threshold="user.balance_notify_threshold"
-        :extra-emails="user.balance_notify_extra_emails ?? []"
-        :system-default-threshold="systemDefaultThreshold"
-        :user-email="user.email"
-      />
-      <ProfilePasswordForm />
-      <ProfileTotpCard />
-    </div>
-  </AppLayout>
+ <AppLayout>
+ <div class="mx-auto max-w-4xl space-y-6">
+ <div class="grid grid-cols-1 gap-6 sm:grid-cols-3">
+ <StatCard :title="t('profile.accountBalance')" :value="formatCurrency(user?.balance || 0)" :icon="WalletIcon" icon-variant="success" />
+ <StatCard :title="t('profile.concurrencyLimit')" :value="user?.concurrency || 0" :icon="BoltIcon" icon-variant="warning" />
+ <StatCard :title="t('profile.memberSince')" :value="formatDate(user?.created_at || '', { year: 'numeric', month: 'long' })" :icon="CalendarIcon" icon-variant="primary" />
+ </div>
+ <ProfileInfoCard :user="user" />
+ <div v-if="contactInfo" class="card border-primary-200 bg-primary-50 p-6">
+ <div class="flex items-center gap-4">
+ <div class="p-3 bg-primary-100 rounded-xl text-primary-600"><Icon name="chat" size="lg" /></div>
+ <div><h3 class="font-semibold text-primary-800">{{ t('common.contactSupport') }}</h3><p class="text-sm font-medium">{{ contactInfo }}</p></div>
+ </div>
+ </div>
+ <ProfileEditForm :initial-username="user?.username || ''" />
+ <ProfileBalanceNotifyCard
+ v-if="user && balanceLowNotifyEnabled"
+ :enabled="user.balance_notify_enabled ?? true"
+ :threshold="user.balance_notify_threshold"
+ :extra-emails="user.balance_notify_extra_emails ?? []"
+ :system-default-threshold="systemDefaultThreshold"
+ :user-email="user.email"
+ />
+ <ProfilePasswordForm />
+ <ProfileTotpCard />
+ </div>
+ </AppLayout>
 </template>
 
 <script setup lang="ts">

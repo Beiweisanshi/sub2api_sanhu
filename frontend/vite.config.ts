@@ -1,7 +1,13 @@
+/**
+ * 作者：mkx
+ * 日期：2026-04-21
+ * 变更说明：为构建输出目录增加可写性检测，当前环境不可写时回退到前端本地 dist
+ */
+import { accessSync, constants, existsSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
 import { defineConfig, loadEnv, Plugin } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import checker from 'vite-plugin-checker'
-import { resolve } from 'path'
 
 /**
  * Vite 插件：开发模式下注入公开配置到 index.html
@@ -34,11 +40,33 @@ function injectPublicSettings(backendUrl: string): Plugin {
   }
 }
 
+function resolveBuildOutDir(env: Record<string, string>) {
+  const configuredOutDir = env.VITE_BUILD_OUT_DIR || '../backend/internal/web/dist'
+  const absoluteOutDir = resolve(__dirname, configuredOutDir)
+  let probeDir = absoluteOutDir
+
+  while (!existsSync(probeDir)) {
+    const parentDir = dirname(probeDir)
+    if (parentDir === probeDir) {
+      break
+    }
+    probeDir = parentDir
+  }
+
+  try {
+    accessSync(probeDir, constants.W_OK)
+    return configuredOutDir
+  } catch {
+    throw new Error(`[vite] 构建输出目录不可写: ${absoluteOutDir}，请确保目录存在且有写入权限`)
+  }
+}
+
 export default defineConfig(({ mode }) => {
   // 加载环境变量
   const env = loadEnv(mode, process.cwd(), '')
   const backendUrl = env.VITE_DEV_PROXY_TARGET || 'http://localhost:8080'
   const devPort = Number(env.VITE_DEV_PORT || 3000)
+  const buildOutDir = resolveBuildOutDir(env)
 
   return {
     plugins: [
@@ -62,7 +90,7 @@ export default defineConfig(({ mode }) => {
     __INTLIFY_JIT_COMPILATION__: true
   },
   build: {
-    outDir: '../backend/internal/web/dist',
+    outDir: buildOutDir,
     emptyOutDir: true,
     rollupOptions: {
       output: {
