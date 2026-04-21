@@ -279,6 +279,11 @@ func AccountFromServiceShallow(a *service.Account) *Account {
 				out.CustomBaseURL = &customURL
 			}
 		}
+		// 用量百分比限额
+		if limit := a.GetUsagePercentLimit(); limit > 0 {
+			v := int(limit)
+			out.UsagePercentLimit = &v
+		}
 	}
 
 	// 提取账号配额限制（apikey / bedrock 类型有效）

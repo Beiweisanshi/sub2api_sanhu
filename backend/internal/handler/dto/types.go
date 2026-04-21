@@ -211,6 +211,9 @@ type Account struct {
 	CustomBaseURLEnabled *bool   `json:"custom_base_url_enabled,omitempty"`
 	CustomBaseURL        *string `json:"custom_base_url,omitempty"`
 
+	// 用量百分比限额（仅 Anthropic OAuth/SetupToken 账号有效）
+	UsagePercentLimit *int `json:"usage_percent_limit,omitempty"`
+
 	// API Key 账号配额限制
 	QuotaLimit       *float64 `json:"quota_limit,omitempty"`
 	QuotaUsed        *float64 `json:"quota_used,omitempty"`
