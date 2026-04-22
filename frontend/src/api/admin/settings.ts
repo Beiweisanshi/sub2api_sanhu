@@ -418,7 +418,7 @@ export interface SystemSettings {
   identity_patch_prompt: string;
 
   // Telemetry proxy runtime switch
-  telemetry_enabled: boolean
+  telemetry_enabled?: boolean
 
   // Ops Monitoring (vNext)
   ops_monitoring_enabled: boolean;
@@ -437,15 +437,14 @@ export interface SystemSettings {
   enable_fingerprint_unification: boolean;
   enable_metadata_passthrough: boolean;
   enable_cch_signing: boolean;
-  enable_env_scrub: boolean;
-  enable_system_reminder_scrub: boolean;
-  enable_billing_inject: boolean;
-  enable_cc_fingerprint_v2: boolean;
+  enable_env_scrub?: boolean;
+  enable_system_reminder_scrub?: boolean;
+  enable_billing_inject?: boolean;
+  enable_cc_fingerprint_v2?: boolean;
   enable_response_header_strip?: boolean;
   enable_remote_header_strip?: boolean;
   enable_strict_validator?: boolean;
   enable_telemetry_heartbeat?: boolean;
-  telemetry_enabled?: boolean;
   web_search_emulation_enabled?: boolean;
 
   // Payment configuration

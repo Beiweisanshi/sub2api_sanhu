@@ -3,26 +3,26 @@
     <div class="space-y-6">
       <!-- Title -->
       <div class="text-center">
-        <h2 class="text-2xl font-bold text-gray-900 dark:text-white">
+        <h2 class="text-2xl font-bold text-gray-900">
           {{ t('auth.resetPasswordTitle') }}
         </h2>
-        <p class="mt-2 text-sm text-gray-500 dark:text-dark-400">
+        <p class="mt-2 text-sm text-gray-500">
           {{ t('auth.resetPasswordHint') }}
         </p>
       </div>
 
       <!-- Invalid Link State -->
       <div v-if="isInvalidLink" class="space-y-6">
-        <div class="rounded-xl border border-amber-200 bg-amber-50 p-6 dark:border-amber-800/50 dark:bg-amber-900/20">
+        <div class="rounded-xl border border-amber-200 bg-amber-50 p-6">
           <div class="flex flex-col items-center gap-4 text-center">
-            <div class="flex h-12 w-12 items-center justify-center rounded-full bg-amber-100 dark:bg-amber-800/50">
-              <Icon name="exclamationCircle" size="lg" class="text-amber-600 dark:text-amber-400" />
+            <div class="flex h-12 w-12 items-center justify-center rounded-full bg-amber-100">
+              <Icon name="exclamationCircle" size="lg" class="text-amber-600" />
             </div>
             <div>
-              <h3 class="text-lg font-semibold text-amber-800 dark:text-amber-200">
+              <h3 class="text-lg font-semibold text-amber-800">
                 {{ t('auth.invalidResetLink') }}
               </h3>
-              <p class="mt-2 text-sm text-amber-700 dark:text-amber-300">
+              <p class="mt-2 text-sm text-amber-700">
                 {{ t('auth.invalidResetLinkHint') }}
               </p>
             </div>
@@ -32,7 +32,7 @@
         <div class="text-center">
           <router-link
             to="/forgot-password"
-            class="inline-flex items-center gap-2 font-medium text-primary-600 transition-colors hover:text-primary-500 dark:text-primary-400 dark:hover:text-primary-300"
+            class="inline-flex items-center gap-2 font-medium text-primary-600 transition-colors hover:text-primary-500"
           >
             {{ t('auth.requestNewResetLink') }}
           </router-link>
@@ -41,16 +41,16 @@
 
       <!-- Success State -->
       <div v-else-if="isSuccess" class="space-y-6">
-        <div class="rounded-xl border border-green-200 bg-green-50 p-6 dark:border-green-800/50 dark:bg-green-900/20">
+        <div class="rounded-xl border border-green-200 bg-green-50 p-6">
           <div class="flex flex-col items-center gap-4 text-center">
-            <div class="flex h-12 w-12 items-center justify-center rounded-full bg-green-100 dark:bg-green-800/50">
-              <Icon name="checkCircle" size="lg" class="text-green-600 dark:text-green-400" />
+            <div class="flex h-12 w-12 items-center justify-center rounded-full bg-green-100">
+              <Icon name="checkCircle" size="lg" class="text-green-600" />
             </div>
             <div>
-              <h3 class="text-lg font-semibold text-green-800 dark:text-green-200">
+              <h3 class="text-lg font-semibold text-green-800">
                 {{ t('auth.passwordResetSuccess') }}
               </h3>
-              <p class="mt-2 text-sm text-green-700 dark:text-green-300">
+              <p class="mt-2 text-sm text-green-700">
                 {{ t('auth.passwordResetSuccessHint') }}
               </p>
             </div>
@@ -77,7 +77,7 @@
           </label>
           <div class="relative">
             <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5">
-              <Icon name="mail" size="md" class="text-gray-400 dark:text-dark-500" />
+              <Icon name="mail" size="md" class="text-gray-400" />
             </div>
             <input
               id="email"
@@ -85,7 +85,7 @@
               type="email"
               readonly
               disabled
-              class="input pl-11 bg-gray-50 dark:bg-dark-700"
+              class="input pl-11 bg-gray-50"
             />
           </div>
         </div>
@@ -97,7 +97,7 @@
           </label>
           <div class="relative">
             <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5">
-              <Icon name="lock" size="md" class="text-gray-400 dark:text-dark-500" />
+              <Icon name="lock" size="md" class="text-gray-400" />
             </div>
             <input
               id="password"
@@ -113,7 +113,7 @@
             <button
               type="button"
               @click="showPassword = !showPassword"
-              class="absolute inset-y-0 right-0 flex items-center pr-3.5 text-gray-400 transition-colors hover:text-gray-600 dark:hover:text-dark-300"
+              class="absolute inset-y-0 right-0 flex items-center pr-3.5 text-gray-400 transition-colors hover:text-gray-600"
             >
               <Icon v-if="showPassword" name="eyeOff" size="md" />
               <Icon v-else name="eye" size="md" />
@@ -128,7 +128,7 @@
           </label>
           <div class="relative">
             <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5">
-              <Icon name="lock" size="md" class="text-gray-400 dark:text-dark-500" />
+              <Icon name="lock" size="md" class="text-gray-400" />
             </div>
             <input
               id="confirmPassword"
@@ -144,7 +144,7 @@
             <button
               type="button"
               @click="showConfirmPassword = !showConfirmPassword"
-              class="absolute inset-y-0 right-0 flex items-center pr-3.5 text-gray-400 transition-colors hover:text-gray-600 dark:hover:text-dark-300"
+              class="absolute inset-y-0 right-0 flex items-center pr-3.5 text-gray-400 transition-colors hover:text-gray-600"
             >
               <Icon v-if="showConfirmPassword" name="eyeOff" size="md" />
               <Icon v-else name="eye" size="md" />
@@ -186,11 +186,11 @@
 
     <!-- Footer -->
     <template #footer>
-      <p class="text-gray-500 dark:text-dark-400">
+      <p class="text-gray-500">
         {{ t('auth.rememberedPassword') }}
         <router-link
           to="/login"
-          class="font-medium text-primary-600 transition-colors hover:text-primary-500 dark:text-primary-400 dark:hover:text-primary-300"
+          class="font-medium text-primary-600 transition-colors hover:text-primary-500"
         >
           {{ t('auth.signIn') }}
         </router-link>

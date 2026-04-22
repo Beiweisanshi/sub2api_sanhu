@@ -3,26 +3,26 @@
     <div class="space-y-6">
       <!-- Title -->
       <div class="text-center">
-        <h2 class="text-2xl font-bold text-gray-900 dark:text-white">
+        <h2 class="text-2xl font-bold text-gray-900">
           {{ t('auth.forgotPasswordTitle') }}
         </h2>
-        <p class="mt-2 text-sm text-gray-500 dark:text-dark-400">
+        <p class="mt-2 text-sm text-gray-500">
           {{ t('auth.forgotPasswordHint') }}
         </p>
       </div>
 
       <!-- Success State -->
       <div v-if="isSubmitted" class="space-y-6">
-        <div class="rounded-xl border border-green-200 bg-green-50 p-6 dark:border-green-800/50 dark:bg-green-900/20">
+        <div class="rounded-xl border border-green-200 bg-green-50 p-6">
           <div class="flex flex-col items-center gap-4 text-center">
-            <div class="flex h-12 w-12 items-center justify-center rounded-full bg-green-100 dark:bg-green-800/50">
-              <Icon name="checkCircle" size="lg" class="text-green-600 dark:text-green-400" />
+            <div class="flex h-12 w-12 items-center justify-center rounded-full bg-green-100">
+              <Icon name="checkCircle" size="lg" class="text-green-600" />
             </div>
             <div>
-              <h3 class="text-lg font-semibold text-green-800 dark:text-green-200">
+              <h3 class="text-lg font-semibold text-green-800">
                 {{ t('auth.resetEmailSent') }}
               </h3>
-              <p class="mt-2 text-sm text-green-700 dark:text-green-300">
+              <p class="mt-2 text-sm text-green-700">
                 {{ t('auth.resetEmailSentHint') }}
               </p>
             </div>
@@ -32,7 +32,7 @@
         <div class="text-center">
           <router-link
             to="/login"
-            class="inline-flex items-center gap-2 font-medium text-primary-600 transition-colors hover:text-primary-500 dark:text-primary-400 dark:hover:text-primary-300"
+            class="inline-flex items-center gap-2 font-medium text-primary-600 transition-colors hover:text-primary-500"
           >
             <Icon name="arrowLeft" size="sm" />
             {{ t('auth.backToLogin') }}
@@ -49,7 +49,7 @@
           </label>
           <div class="relative">
             <div class="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5">
-              <Icon name="mail" size="md" class="text-gray-400 dark:text-dark-500" />
+              <Icon name="mail" size="md" class="text-gray-400" />
             </div>
             <input
               id="email"
@@ -111,11 +111,11 @@
 
     <!-- Footer -->
     <template #footer>
-      <p class="text-gray-500 dark:text-dark-400">
+      <p class="text-gray-500">
         {{ t('auth.rememberedPassword') }}
         <router-link
           to="/login"
-          class="font-medium text-primary-600 transition-colors hover:text-primary-500 dark:text-primary-400 dark:hover:text-primary-300"
+          class="font-medium text-primary-600 transition-colors hover:text-primary-500"
         >
           {{ t('auth.signIn') }}
         </router-link>
