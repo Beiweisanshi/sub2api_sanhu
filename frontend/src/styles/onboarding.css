@@ -197,11 +197,11 @@
 }
 
 .theme-tour-popover .driver-popover-next-btn {
-  background-color: #D96C4A !important;
+  background-color: #C96442 !important;
   color: #ffffff !important;
   box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05) !important;
 }
-.theme-tour-popover .driver-popover-next-btn:hover { background-color: #C1573A !important; }
+.theme-tour-popover .driver-popover-next-btn:hover { background-color: #B15434 !important; }
 
 .theme-tour-popover .driver-popover-prev-btn {
   background-color: white !important;

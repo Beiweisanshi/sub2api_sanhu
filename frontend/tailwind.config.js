@@ -1,7 +1,7 @@
 /**
  * 作者：mkx
  * 日期：2026-04-22
- * 变更说明：方案 A 配色优化 - 恢复中性灰、删除冗余色系，新增语义色别名
+ * 变更说明：A+B 和谐化 - primary 降饱和至陶土橙、gray 换暖灰、claude.* 对齐 gray 数值、glow 改纸本阴影
  */
 /** @type {import('tailwindcss').Config} */
 export default {
@@ -11,40 +11,40 @@ export default {
     extend: {
       colors: {
         primary: {
-          50: '#FBF2EE',
-          100: '#F6E1D6',
-          200: '#EDC1AC',
-          300: '#E49F81',
-          400: '#DF8663',
-          500: '#D96C4A',
-          600: '#C1573A',
-          700: '#9C422C',
-          800: '#703020',
-          900: '#4A2015',
+          50: '#FBF2EC',
+          100: '#F4DED1',
+          200: '#E8C3AF',
+          300: '#DCA589',
+          400: '#CE8564',
+          500: '#C96442',
+          600: '#B15434',
+          700: '#934328',
+          800: '#76361F',
+          900: '#5A2917',
           950: '#2B120B'
         },
         claude: {
-          bg: '#FDFCF8',
+          bg: '#FAF8F4',
           text: '#2D2A26',
-          muted: '#6B665E',
-          accent: '#D96C4A',
-          border: '#E8E5DF',
+          muted: '#756F62',
+          accent: '#C96442',
+          border: '#E5E0D6',
           card: '#FFFFFF',
           code: '#1E1E1E',
-          'code-bg': '#F8F6F2'
+          'code-bg': '#F4EFE6'
         },
         gray: {
-          50: '#F9FAFB',
-          100: '#F3F4F6',
-          200: '#E5E7EB',
-          300: '#D1D5DB',
-          400: '#9CA3AF',
-          500: '#6B7280',
-          600: '#4B5563',
-          700: '#374151',
-          800: '#1F2937',
-          900: '#111827',
-          950: '#030712'
+          50: '#FAF8F4',
+          100: '#F2EEE6',
+          200: '#E5E0D6',
+          300: '#CFC8BA',
+          400: '#A39C8E',
+          500: '#756F62',
+          600: '#5A554A',
+          700: '#433F37',
+          800: '#2D2A26',
+          900: '#1F1C18',
+          950: '#0F0D0A'
         },
         // 语义色别名：方便 @apply 时直接引用语义名
         // 作者：mkx  日期：2026-04-22
@@ -94,20 +94,20 @@ export default {
       boxShadow: {
         glass: '0 8px 32px rgba(0, 0, 0, 0.08)',
         'glass-sm': '0 4px 16px rgba(0, 0, 0, 0.06)',
-        glow: '0 0 20px rgba(217, 108, 74, 0.22)',
-        'glow-lg': '0 0 40px rgba(217, 108, 74, 0.32)',
+        glow: '0 1px 2px rgba(201, 100, 66, 0.06), 0 1px 3px rgba(45, 42, 38, 0.04)',
+        'glow-lg': '0 2px 6px rgba(201, 100, 66, 0.08), 0 1px 2px rgba(45, 42, 38, 0.05)',
         card: '0 1px 3px rgba(0, 0, 0, 0.04), 0 1px 2px rgba(0, 0, 0, 0.06)',
         'card-hover': '0 10px 40px rgba(0, 0, 0, 0.08)',
         'inner-glow': 'inset 0 1px 0 rgba(255, 255, 255, 0.1)'
       },
       backgroundImage: {
         'gradient-radial': 'radial-gradient(var(--tw-gradient-stops))',
-        'gradient-primary': 'linear-gradient(135deg, #D96C4A 0%, #C1573A 100%)',
+        'gradient-primary': 'linear-gradient(135deg, #C96442 0%, #B15434 100%)',
         'gradient-dark': 'linear-gradient(135deg, #37332E 0%, #2D2A26 100%)',
         'gradient-glass':
           'linear-gradient(135deg, rgba(255,255,255,0.1) 0%, rgba(255,255,255,0.05) 100%)',
         'mesh-gradient':
-          'radial-gradient(at 40% 20%, rgba(217, 108, 74, 0.10) 0px, transparent 50%), radial-gradient(at 80% 0%, rgba(107, 102, 94, 0.08) 0px, transparent 50%), radial-gradient(at 0% 50%, rgba(217, 108, 74, 0.08) 0px, transparent 50%)'
+          'radial-gradient(at 40% 20%, rgba(201, 100, 66, 0.06) 0px, transparent 50%), radial-gradient(at 80% 0%, rgba(117, 111, 98, 0.05) 0px, transparent 50%), radial-gradient(at 0% 50%, rgba(201, 100, 66, 0.05) 0px, transparent 50%)'
       },
       animation: {
         'fade-in': 'fadeIn 0.3s ease-out',
@@ -145,8 +145,8 @@ export default {
           '100%': { backgroundPosition: '200% 0' }
         },
         glow: {
-          '0%': { boxShadow: '0 0 20px rgba(217, 108, 74, 0.25)' },
-          '100%': { boxShadow: '0 0 30px rgba(217, 108, 74, 0.4)' }
+          '0%': { boxShadow: '0 1px 2px rgba(201, 100, 66, 0.05)' },
+          '100%': { boxShadow: '0 2px 6px rgba(201, 100, 66, 0.08)' }
         }
       },
       backdropBlur: {

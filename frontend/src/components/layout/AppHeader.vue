@@ -19,12 +19,15 @@
  <img
  v-if="siteLogo"
  :src="siteLogo"
- :alt="siteName"
+ alt="芝麻 ZHIMA"
  class="h-full w-full object-contain"
  />
- <span v-else>{{ brandLeading }}</span>
+ <span v-else>芝</span>
  </div>
- <span class="text-sm font-semibold tracking-tight text-claude-text">{{ siteName }}</span>
+ <span class="text-sm font-semibold tracking-tight">
+ <span class="font-serif align-baseline text-claude-text">芝麻</span>
+ <span class="ml-1 font-sans font-medium align-baseline text-[0.85em] text-[#D97048]">ZHIMA</span>
+ </span>
  </router-link>
 
  <div class="hidden lg:block">
@@ -260,11 +263,9 @@ const dropdownOpen = ref(false)
 const dropdownRef = ref<HTMLElement | null>(null)
 const contactInfo = computed(() => appStore.contactInfo)
 const docUrl = computed(() => appStore.docUrl)
-const siteName = computed(() => appStore.siteName || 'Sub2API')
 const siteLogo = computed(() =>
  sanitizeUrl(appStore.siteLogo || '', { allowRelative: true, allowDataUrl: true })
 )
-const brandLeading = computed(() => siteName.value.charAt(0) || 'S')
 
 // 只在标准模式的管理员下显示新手引导按钮
 const showOnboardingButton = computed(() => {

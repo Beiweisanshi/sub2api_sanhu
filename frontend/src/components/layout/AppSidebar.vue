@@ -14,8 +14,9 @@
  <img v-if="settingsLoaded" :src="siteLogo || '/logo.png'" alt="Logo" class="h-full w-full object-contain" />
  </div>
  <div class="sidebar-brand" :class="{ 'sidebar-brand-collapsed': sidebarCollapsed }" :aria-hidden="sidebarCollapsed ? 'true' : 'false'">
- <span class="sidebar-brand-title text-lg font-bold text-claude-text">
- <span class="text-primary-500">{{ siteNameLeading }}</span>{{ siteNameTrailing }}
+ <span class="sidebar-brand-title text-lg font-bold">
+ <span class="font-serif align-baseline text-claude-text">芝麻</span>
+ <span class="ml-1.5 font-sans font-medium align-baseline text-[0.85em] text-[#D97048]">ZHIMA</span>
  </span>
  <!-- Version Badge -->
  <VersionBadge :version="siteVersion" />
@@ -198,12 +199,9 @@ const isAdmin = computed(() => authStore.isAdmin)
 const expandedGroups = ref<Set<string>>(new Set())
 
 // Site settings from appStore (cached, no flicker)
-const siteName = computed(() => appStore.siteName)
 const siteLogo = computed(() => appStore.siteLogo)
 const siteVersion = computed(() => appStore.siteVersion)
 const settingsLoaded = computed(() => appStore.publicSettingsLoaded)
-const siteNameLeading = computed(() => siteName.value?.charAt(0) || 'S')
-const siteNameTrailing = computed(() => siteName.value?.slice(1) || 'ub2API')
 
 // SVG Icon Components
 const DashboardIcon = {

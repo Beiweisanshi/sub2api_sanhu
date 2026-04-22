@@ -99,9 +99,10 @@
  <!-- Left: Text Content -->
  <div class="reveal active flex-1 text-center lg:text-left">
  <h1
- class="mb-4 font-serif text-4xl font-bold text-claude-text text-breathe md:text-5xl lg:text-6xl"
+ class="mb-4 text-4xl font-bold leading-none text-claude-text text-breathe md:text-5xl lg:text-6xl"
  >
- {{ siteName }}
+ <span class="font-serif align-baseline">芝麻</span>
+ <span class="ml-2 font-sans font-medium align-baseline text-[0.85em] text-[#D97048]">ZHIMA</span>
  </h1>
  <p class="mb-8 text-lg text-claude-muted md:text-xl">
  {{ siteSubtitle }}
@@ -359,7 +360,7 @@
  class="mx-auto flex max-w-6xl flex-col items-center justify-center gap-4 text-center sm:flex-row sm:text-left"
  >
  <p class="text-sm text-gray-500">
- &copy; {{ currentYear }} {{ siteName }}. {{ t('home.footer.allRightsReserved') }}
+ &copy; {{ currentYear }} 芝麻 ZHIMA. {{ t('home.footer.allRightsReserved') }}
  </p>
  <div class="flex items-center gap-4">
  <a
@@ -398,7 +399,6 @@ const authStore = useAuthStore()
 const appStore = useAppStore()
 
 // Site settings - directly from appStore (already initialized from injected config)
-const siteName = computed(() => appStore.cachedPublicSettings?.site_name || appStore.siteName || 'Sub2API')
 const siteLogo = computed(() => appStore.cachedPublicSettings?.site_logo || appStore.siteLogo || '')
 const siteSubtitle = computed(() => appStore.cachedPublicSettings?.site_subtitle || 'AI API Gateway Platform')
 const docUrl = computed(() => appStore.cachedPublicSettings?.doc_url || appStore.docUrl || '')
@@ -608,7 +608,7 @@ onUnmounted(() => {
  color: #d9b9ac;
 }
 .code-url {
- color: #d96c4a;
+ color: #C96442;
 }
 .code-comment {
  color: #8c8578;

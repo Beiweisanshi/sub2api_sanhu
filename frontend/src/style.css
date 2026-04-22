@@ -1,7 +1,7 @@
 /**
  * 作者：mkx
  * 日期：2026-04-22
- * 变更说明：方案 A 配色优化 - 语义组件类恢复正确色系（success=emerald, info=sky, purple=purple）
+ * 变更说明：A+B 和谐化 - 按钮去渐变、glow 降权、sidebar 左线激活态、标题去渐变字、暖米 body 背景
  */
 @tailwind base;
 @tailwind components;
@@ -22,7 +22,7 @@
   }
 
   body {
-    @apply min-h-screen bg-white text-claude-text antialiased;
+    @apply min-h-screen bg-claude-bg text-claude-text antialiased;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
@@ -89,9 +89,8 @@
   }
 
   .btn-primary {
-    @apply bg-gradient-to-r from-primary-500 to-primary-600 text-white shadow-md shadow-primary-500/25;
-    @apply hover:from-primary-600 hover:to-primary-700 hover:shadow-lg hover:shadow-primary-500/30;
-    @apply active:from-primary-700 active:to-primary-800;
+    @apply bg-primary-500 text-white;
+    @apply hover:bg-primary-600 active:bg-primary-700;
   }
 
   .btn-secondary {
@@ -481,9 +480,9 @@
   }
 
   .sidebar-link {
-    @apply flex items-center gap-3 overflow-hidden rounded-xl py-2.5 text-sm font-medium text-gray-700;
+    @apply flex items-center gap-3 overflow-hidden rounded-xl border-l-2 border-transparent py-2.5 text-sm font-medium text-gray-700;
     @apply hover:bg-gray-100 hover:text-claude-text;
-    padding-left: 1.0625rem;
+    padding-left: 0.9375rem;
     padding-right: 0.875rem;
     transition:
       background-color 180ms var(--ease-snappy),
@@ -502,8 +501,8 @@
   }
 
   .sidebar-link-active {
-    @apply border border-primary-200/70 bg-primary-50 text-primary-600 shadow-sm;
-    @apply hover:bg-primary-100 hover:text-primary-700;
+    @apply border-l-2 border-primary-500 bg-primary-50/50 text-primary-700;
+    @apply hover:bg-primary-50 hover:text-primary-700;
   }
 
   .sidebar-section {
@@ -658,10 +657,6 @@
 }
 
 @layer utilities {
-  .text-gradient {
-    @apply bg-gradient-to-r from-primary-500 to-primary-700 bg-clip-text text-transparent;
-  }
-
   .hover-lift {
     transition:
       transform 220ms var(--ease-elegant),
@@ -751,7 +746,7 @@
     border-radius: 9999px;
     filter: blur(80px);
     pointer-events: none;
-    opacity: 0.5;
+    opacity: 0.35;
   }
 
   .blob-1 {
@@ -761,7 +756,7 @@
     max-height: 500px;
     top: 10%;
     left: 15%;
-    background: rgba(217, 108, 74, 0.15);
+    background: rgba(201, 100, 66, 0.06);
     animation: blob-drift-1 15s infinite ease-in-out;
   }
 
@@ -772,7 +767,7 @@
     max-height: 400px;
     right: 15%;
     bottom: 10%;
-    background: rgba(107, 102, 94, 0.12);
+    background: rgba(117, 111, 98, 0.07);
     animation: blob-drift-2 18s infinite ease-in-out;
     animation-delay: -5s;
   }
@@ -790,35 +785,14 @@
   .claude-card-hover:hover {
     transform: translateY(-4px);
     box-shadow: 0 12px 24px -10px rgba(45, 42, 38, 0.08);
-    border-color: #d96c4a;
+    border-color: #D6D1C7;
     opacity: 1 !important;
   }
 
   .claude-card-hover:hover .step-num {
-    background-color: #d96c4a;
+    background-color: #C96442;
     color: #ffffff;
-    border-color: #d96c4a;
-  }
-
-  .list-item-hover {
-    transition: all 0.3s ease;
-    border-left: 2px solid transparent;
-    padding-left: 0;
-  }
-
-  .list-item-hover:hover {
-    border-left: 2px solid #d96c4a;
-    padding-left: 1rem;
-    background: linear-gradient(90deg, rgba(217, 108, 74, 0.03) 0%, transparent 100%);
-  }
-
-  .list-item-hover:hover .list-icon {
-    color: #d96c4a;
-    transform: scale(1.1);
-  }
-
-  .list-icon {
-    transition: all 0.3s ease;
+    border-color: #C96442;
   }
 
   .hero-grid-light {
@@ -876,12 +850,12 @@
 
   @keyframes textBreathe {
     0% {
-      transform: scale(0.98);
-      text-shadow: 0 0 10px rgba(217, 108, 74, 0.1);
+      transform: scale(0.99);
+      text-shadow: 0 0 6px rgba(201, 100, 66, 0.04);
     }
     100% {
-      transform: scale(1.02);
-      text-shadow: 0 0 35px rgba(217, 108, 74, 0.5);
+      transform: scale(1.01);
+      text-shadow: 0 0 12px rgba(201, 100, 66, 0.12);
     }
   }
 }
@@ -889,7 +863,6 @@
 @media (prefers-reduced-motion: reduce) {
   .reveal,
   .claude-card-hover,
-  .list-item-hover,
   .ambient-blob,
   .hero-grid-light,
   .text-breathe {
