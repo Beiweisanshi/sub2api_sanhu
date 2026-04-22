@@ -988,6 +988,28 @@ func (a *Account) IsOpenAIPassthroughEnabled() bool {
 	return false
 }
 
+// IsOpenAIChatCompletionsNativeEnabled 返回 OpenAI 账号是否启用
+// "Chat Completions 原生直通" 模式。
+//
+// 作者：mkx
+// 变更：2026-04-22 新增，用于支持 GLM / DeepSeek / Kimi / new-api 网关等
+// 仅实现 /v1/chat/completions（不实现 /v1/responses）的 OpenAI 兼容上游。
+// 开启后，ForwardAsChatCompletions 会绕过 Responses API 转换，将请求体
+// 原样转发到 <base>/v1/chat/completions。
+//
+// 字段：accounts.extra.openai_chat_completions_mode_enabled
+// 仅对 platform=openai、type=apikey 的账号生效；字段缺失或类型不正确时按 false。
+func (a *Account) IsOpenAIChatCompletionsNativeEnabled() bool {
+	if a == nil || !a.IsOpenAIApiKey() || a.Extra == nil {
+		return false
+	}
+	enabled, ok := a.Extra["openai_chat_completions_mode_enabled"].(bool)
+	if !ok {
+		return false
+	}
+	return enabled
+}
+
 // IsOpenAIResponsesWebSocketV2Enabled 返回 OpenAI 账号是否开启 Responses WebSocket v2。
 //
 // 分类型新字段：

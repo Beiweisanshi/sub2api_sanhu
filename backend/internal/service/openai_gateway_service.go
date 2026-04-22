@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -4169,6 +4170,39 @@ func buildOpenAIResponsesURL(base string) string {
 		return normalized + "/responses"
 	}
 	return normalized + "/v1/responses"
+}
+
+var openaiVersionSuffixRe = regexp.MustCompile(`/v\d+$`)
+
+// buildOpenAIChatCompletionsURL 组装 OpenAI Chat Completions 端点。
+// 作者：mkx  变更：2026-04-22 新增，用于 Chat Completions 原生直通模式。
+// 作者：mkx  变更：2026-04-22 泛化 /vN 版本根识别，支持火山 Ark /api/coding/v3 等非 /v1 上游
+//
+// 规则（从严到宽）：
+//   - base 已以 /chat/completions 结尾：原样返回
+//   - base 以 /v1/responses 结尾：剥除后再拼接（兼容从老配置迁移）
+//   - base 以 /responses 结尾：剥除后按版本根或默认规则拼接
+//   - base 以 /vN 结尾：追加 /chat/completions
+//   - 其他情况：追加 /v1/chat/completions
+func buildOpenAIChatCompletionsURL(base string) string {
+	normalized := strings.TrimRight(strings.TrimSpace(base), "/")
+	if strings.HasSuffix(normalized, "/chat/completions") {
+		return normalized
+	}
+	if strings.HasSuffix(normalized, "/v1/responses") {
+		return strings.TrimSuffix(normalized, "/responses") + "/chat/completions"
+	}
+	if strings.HasSuffix(normalized, "/responses") {
+		baseWithoutResponses := strings.TrimSuffix(normalized, "/responses")
+		if openaiVersionSuffixRe.MatchString(baseWithoutResponses) {
+			return baseWithoutResponses + "/chat/completions"
+		}
+		return baseWithoutResponses + "/v1/chat/completions"
+	}
+	if openaiVersionSuffixRe.MatchString(normalized) {
+		return normalized + "/chat/completions"
+	}
+	return normalized + "/v1/chat/completions"
 }
 
 func trimOpenAIEncryptedReasoningItems(reqBody map[string]any) bool {

@@ -52,6 +52,14 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 ) (*OpenAIForwardResult, error) {
 	startTime := time.Now()
 
+	// 作者：mkx  变更：2026-04-22
+	// 账号开启 Chat Completions 原生直通时，绕过 Responses API 转换，
+	// 直接将请求体转发到 <base>/v1/chat/completions，用于 GLM / DeepSeek /
+	// Kimi / new-api 等仅实现 /v1/chat/completions 的 OpenAI 兼容上游。
+	if account.IsOpenAIChatCompletionsNativeEnabled() {
+		return s.forwardChatCompletionsNative(ctx, c, account, body, defaultMappedModel, startTime)
+	}
+
 	// 1. Parse Chat Completions request
 	var chatReq apicompat.ChatCompletionsRequest
 	if err := json.Unmarshal(body, &chatReq); err != nil {
@@ -601,4 +609,330 @@ func writeChatCompletionsError(c *gin.Context, statusCode int, errType, message 
 			"message": message,
 		},
 	})
+}
+
+// forwardChatCompletionsNative 将 Chat Completions 请求原样（仅做模型映射）
+// 转发到 <base>/v1/chat/completions，并把上游响应透传回客户端。
+//
+// 作者：mkx  变更：2026-04-22 新增
+// 适用于 GLM / DeepSeek / Kimi / new-api 等仅实现 /v1/chat/completions 的
+// OpenAI 兼容上游。不做 Responses API 转换，不注入 Codex/OAuth 专属头。
+func (s *OpenAIGatewayService) forwardChatCompletionsNative(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	defaultMappedModel string,
+	startTime time.Time,
+) (*OpenAIForwardResult, error) {
+	// 1. 解析请求元信息
+	originalModel := strings.TrimSpace(gjson.GetBytes(body, "model").String())
+	clientStream := gjson.GetBytes(body, "stream").Bool()
+
+	// 2. 模型映射（账号级 mapping > 分组 default mapping > 原模型）
+	billingModel := resolveOpenAIForwardModel(account, originalModel, defaultMappedModel)
+	upstreamModel := billingModel
+	// 仅在映射后模型与原模型不同时改写 body，避免无谓的序列化。
+	var upstreamBody []byte
+	if upstreamModel != "" && upstreamModel != originalModel {
+		rewritten, err := sjson.SetBytes(body, "model", upstreamModel)
+		if err != nil {
+			return nil, fmt.Errorf("rewrite model in cc native body: %w", err)
+		}
+		upstreamBody = rewritten
+	} else {
+		upstreamBody = body
+	}
+
+	logger.L().Debug("openai chat_completions native: forwarding",
+		zap.Int64("account_id", account.ID),
+		zap.String("original_model", originalModel),
+		zap.String("billing_model", billingModel),
+		zap.String("upstream_model", upstreamModel),
+		zap.Bool("stream", clientStream),
+	)
+
+	// 3. 获取上游认证（API Key 账号为 Bearer token）
+	token, _, err := s.GetAccessToken(ctx, account)
+	if err != nil {
+		return nil, fmt.Errorf("get access token: %w", err)
+	}
+
+	// 4. 组装上游请求
+	upstreamReq, err := s.buildUpstreamRequestChatCompletionsNative(ctx, c, account, upstreamBody, token)
+	if err != nil {
+		return nil, fmt.Errorf("build upstream request: %w", err)
+	}
+
+	// 5. 发起上游请求
+	proxyURL := ""
+	if account.Proxy != nil {
+		proxyURL = account.Proxy.URL()
+	}
+	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+	if err != nil {
+		safeErr := sanitizeUpstreamErrorMessage(err.Error())
+		setOpsUpstreamError(c, 0, safeErr, "")
+		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+			Platform:           account.Platform,
+			AccountID:          account.ID,
+			AccountName:        account.Name,
+			UpstreamStatusCode: 0,
+			Kind:               "request_error",
+			Message:            safeErr,
+		})
+		writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
+		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// 6. 错误响应：复用标准失败切换状态码规则
+	if resp.StatusCode >= 400 {
+		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(respBody))
+
+		upstreamMsg := strings.TrimSpace(extractUpstreamErrorMessage(respBody))
+		upstreamMsg = sanitizeUpstreamErrorMessage(upstreamMsg)
+		if s.shouldFailoverOpenAIUpstreamResponse(resp.StatusCode, upstreamMsg, respBody) {
+			upstreamDetail := ""
+			if s.cfg != nil && s.cfg.Gateway.LogUpstreamErrorBody {
+				maxBytes := s.cfg.Gateway.LogUpstreamErrorBodyMaxBytes
+				if maxBytes <= 0 {
+					maxBytes = 2048
+				}
+				upstreamDetail = truncateString(string(respBody), maxBytes)
+			}
+			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+				Platform:           account.Platform,
+				AccountID:          account.ID,
+				AccountName:        account.Name,
+				UpstreamStatusCode: resp.StatusCode,
+				UpstreamRequestID:  resp.Header.Get("x-request-id"),
+				Kind:               "failover",
+				Message:            upstreamMsg,
+				Detail:             upstreamDetail,
+			})
+			if s.rateLimitService != nil {
+				s.rateLimitService.HandleUpstreamError(ctx, account, resp.StatusCode, resp.Header, respBody)
+			}
+			return nil, &UpstreamFailoverError{
+				StatusCode:   resp.StatusCode,
+				ResponseBody: respBody,
+				// 对齐老路径的同账号重试判定：pool 模式下兼容 429/5xx 以及
+				// OpenAI "an error occurred while processing" 这类 400 transient。
+				RetryableOnSameAccount: account.IsPoolMode() &&
+					(isPoolModeRetryableStatus(resp.StatusCode) ||
+						isOpenAITransientProcessingError(resp.StatusCode, upstreamMsg, respBody)),
+			}
+		}
+		return s.handleChatCompletionsErrorResponse(resp, c, account)
+	}
+
+	// 7. 正常响应
+	requestID := resp.Header.Get("x-request-id")
+	// 透出计费需要的服务等级 / 推理强度字段（老路径由 ResponsesRequest 回填）
+	serviceTier := extractOpenAIServiceTierFromBody(body)
+	reasoningEffort := extractCCReasoningEffortFromBody(body)
+	if s.responseHeaderFilter != nil {
+		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
+	}
+
+	var usage OpenAIUsage
+	var firstTokenMs *int
+
+	if clientStream {
+		// 流式：按行读上游 SSE，原样回写；同时嗅探 usage chunk
+		c.Writer.Header().Set("Content-Type", "text/event-stream")
+		c.Writer.Header().Set("Cache-Control", "no-cache")
+		c.Writer.Header().Set("Connection", "keep-alive")
+		c.Writer.Header().Set("X-Accel-Buffering", "no")
+		c.Writer.WriteHeader(http.StatusOK)
+
+		scanner := bufio.NewScanner(resp.Body)
+		maxLineSize := defaultMaxLineSize
+		if s.cfg != nil && s.cfg.Gateway.MaxLineSize > 0 {
+			maxLineSize = s.cfg.Gateway.MaxLineSize
+		}
+		scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
+
+		first := true
+		clientDisconnected := false
+		sawDone := false
+		for scanner.Scan() {
+			line := scanner.Text()
+			if first && strings.HasPrefix(line, "data: ") {
+				first = false
+				ms := int(time.Since(startTime).Milliseconds())
+				firstTokenMs = &ms
+			}
+			// 客户端断连后仍继续 drain 上游，以便捕获最后一帧 usage 做计费记录
+			if !clientDisconnected {
+				if _, werr := fmt.Fprintln(c.Writer, line); werr != nil {
+					clientDisconnected = true
+				}
+				if line == "" {
+					c.Writer.Flush()
+				}
+			}
+			if line == "data: [DONE]" {
+				sawDone = true
+			}
+			// 从 data 行抓取 usage（OpenAI CC 在 include_usage=true 时最后一帧含 usage）
+			if strings.HasPrefix(line, "data: ") && line != "data: [DONE]" {
+				payload := line[6:]
+				if u := parseChatCompletionsUsageFromChunk(payload); u != nil {
+					usage = *u
+				}
+			}
+			if !clientDisconnected && line != "" {
+				c.Writer.Flush()
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+				logger.L().Warn("openai chat_completions native: stream read error",
+					zap.Error(err),
+					zap.String("request_id", requestID),
+				)
+			}
+		} else if !sawDone && !clientDisconnected {
+			logger.L().Warn("openai chat_completions native: stream ended without [DONE] marker",
+				zap.String("request_id", requestID),
+				zap.Int64("account_id", account.ID),
+			)
+		}
+	} else {
+		// 非流式：复用统一的上游响应体大小限制工具
+		respBody, rerr := ReadUpstreamResponseBody(resp.Body, s.cfg, c, openAITooLargeError)
+		if rerr != nil {
+			logger.L().Warn("openai chat_completions native: read body error",
+				zap.Error(rerr),
+				zap.String("request_id", requestID),
+			)
+			return nil, rerr
+		}
+		// 某些 OpenAI 兼容上游即使 stream=false 仍会返回 SSE；此时直接透传，
+		// 客户端按 CC 协议可容忍（不走 Responses→JSON 的精细转换，避免引入复杂度）。
+		if isEventStreamResponse(resp.Header) {
+			logger.L().Warn("openai chat_completions native: upstream returned SSE for non-streaming request, forwarding as-is",
+				zap.String("request_id", requestID),
+				zap.Int64("account_id", account.ID),
+			)
+			// 从 SSE 各 data 行扫一下 usage
+			for _, line := range strings.Split(string(respBody), "\n") {
+				if strings.HasPrefix(line, "data: ") && line != "data: [DONE]" {
+					if u := parseChatCompletionsUsageFromChunk(line[6:]); u != nil {
+						usage = *u
+					}
+				}
+			}
+		} else if u := parseChatCompletionsUsageFromChunk(string(respBody)); u != nil {
+			usage = *u
+		}
+		ms := int(time.Since(startTime).Milliseconds())
+		firstTokenMs = &ms
+		contentType := resp.Header.Get("Content-Type")
+		if contentType == "" {
+			contentType = "application/json"
+		}
+		c.Data(http.StatusOK, contentType, respBody)
+	}
+
+	return &OpenAIForwardResult{
+		RequestID:       requestID,
+		Usage:           usage,
+		Model:           originalModel,
+		BillingModel:    billingModel,
+		UpstreamModel:   upstreamModel,
+		Stream:          clientStream,
+		Duration:        time.Since(startTime),
+		FirstTokenMs:    firstTokenMs,
+		ServiceTier:     serviceTier,
+		ReasoningEffort: reasoningEffort,
+	}, nil
+}
+
+// buildUpstreamRequestChatCompletionsNative 为原生 Chat Completions 直通模式
+// 构造精简上游请求：仅注入 Bearer 认证、Content-Type，透传白名单请求头。
+// 作者：mkx  变更：2026-04-22 新增
+func (s *OpenAIGatewayService) buildUpstreamRequestChatCompletionsNative(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	body []byte,
+	token string,
+) (*http.Request, error) {
+	// 组装目标 URL：优先账号 base_url + /v1/chat/completions
+	baseURL := account.GetOpenAIBaseURL()
+	if baseURL == "" {
+		return nil, fmt.Errorf("openai chat_completions native: account base_url is empty")
+	}
+	validatedURL, err := s.validateUpstreamBaseURL(baseURL)
+	if err != nil {
+		return nil, err
+	}
+	targetURL := buildOpenAIChatCompletionsURL(validatedURL)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+
+	// 透传客户端请求头（沿用 passthrough 白名单逻辑；不包含任何 Codex/OAuth 专属头）
+	allowTimeoutHeaders := s.isOpenAIPassthroughTimeoutHeadersAllowed()
+	if c != nil && c.Request != nil {
+		for key, values := range c.Request.Header {
+			lower := strings.ToLower(strings.TrimSpace(key))
+			if !isOpenAIPassthroughAllowedRequestHeader(lower, allowTimeoutHeaders) {
+				continue
+			}
+			for _, v := range values {
+				req.Header.Add(key, v)
+			}
+		}
+	}
+
+	// 覆盖入站鉴权残留，注入上游 API Key
+	req.Header.Del("authorization")
+	req.Header.Del("x-api-key")
+	req.Header.Del("x-goog-api-key")
+	req.Header.Set("authorization", "Bearer "+token)
+
+	// 账号自定义 UA（若有）
+	if customUA := account.GetOpenAIUserAgent(); customUA != "" {
+		req.Header.Set("user-agent", customUA)
+	}
+	if req.Header.Get("content-type") == "" {
+		req.Header.Set("content-type", "application/json")
+	}
+	return req, nil
+}
+
+// parseChatCompletionsUsageFromChunk 从一段 OpenAI CC 格式的 JSON 文本
+// （可能是流式 chunk，也可能是非流式完整响应）中提取 usage。
+// 作者：mkx  变更：2026-04-22 新增
+// 字段约定：
+//   - usage.prompt_tokens         → InputTokens
+//   - usage.completion_tokens     → OutputTokens
+//   - usage.prompt_tokens_details.cached_tokens → CacheReadInputTokens（可选）
+//
+// 未命中返回 nil，交由调用方保留已有值（支持多帧情况下的覆盖语义）。
+func parseChatCompletionsUsageFromChunk(payload string) *OpenAIUsage {
+	usageResult := gjson.Get(payload, "usage")
+	if !usageResult.Exists() || !usageResult.IsObject() {
+		return nil
+	}
+	prompt := usageResult.Get("prompt_tokens").Int()
+	completion := usageResult.Get("completion_tokens").Int()
+	cached := usageResult.Get("prompt_tokens_details.cached_tokens").Int()
+	// 全 0 视为未携带 usage（某些上游会把空 usage 对象放在 chunk 里）
+	if prompt == 0 && completion == 0 && cached == 0 {
+		return nil
+	}
+	return &OpenAIUsage{
+		InputTokens:          int(prompt),
+		OutputTokens:         int(completion),
+		CacheReadInputTokens: int(cached),
+	}
 }

@@ -456,6 +456,7 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	var authToken string
 	var apiURL string
 	var isOAuth bool
+	var useChatCompletions bool
 	var chatgptAccountID string
 
 	if account.IsOAuth() {
@@ -484,7 +485,12 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 		if err != nil {
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Invalid base URL: %s", err.Error()))
 		}
-		apiURL = strings.TrimSuffix(normalizedBaseURL, "/") + "/responses"
+		if account.IsOpenAIChatCompletionsNativeEnabled() {
+			useChatCompletions = true
+			apiURL = buildOpenAIChatCompletionsURL(normalizedBaseURL)
+		} else {
+			apiURL = strings.TrimSuffix(normalizedBaseURL, "/") + "/responses"
+		}
 	} else {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Unsupported account type: %s", account.Type))
 	}
@@ -496,8 +502,11 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.Flush()
 
-	// Create OpenAI Responses API payload
+	// Create OpenAI test payload
 	payload := createOpenAITestPayload(testModelID, isOAuth)
+	if useChatCompletions {
+		payload = createOpenAIChatCompletionsTestPayload(testModelID)
+	}
 	payloadBytes, _ := json.Marshal(payload)
 
 	// Send test_start event
@@ -551,6 +560,9 @@ func (s *AccountTestService) testOpenAIAccountConnection(c *gin.Context, account
 	}
 
 	// Process SSE stream
+	if useChatCompletions {
+		return s.processOpenAIChatCompletionsStream(c, resp.Body)
+	}
 	return s.processOpenAIStream(c, resp.Body)
 }
 
@@ -941,6 +953,22 @@ func createOpenAITestPayload(modelID string, isOAuth bool) map[string]any {
 	return payload
 }
 
+// createOpenAIChatCompletionsTestPayload 构造 /chat/completions 形测试载荷。
+// 作者：mkx  变更：2026-04-22 新增，用于 chat_completions 原生直通账号（如火山 Ark coding v3）。
+func createOpenAIChatCompletionsTestPayload(modelID string) map[string]any {
+	return map[string]any{
+		"model": modelID,
+		"messages": []map[string]any{
+			{
+				"role":    "user",
+				"content": "hi",
+			},
+		},
+		"stream":     true,
+		"max_tokens": 32,
+	}
+}
+
 // processClaudeStream processes the SSE stream from Claude API
 func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.Reader) error {
 	reader := bufio.NewReader(body)
@@ -989,6 +1017,62 @@ func (s *AccountTestService) processClaudeStream(c *gin.Context, body io.Reader)
 				if msg, ok := errData["message"].(string); ok {
 					errorMsg = msg
 				}
+			}
+			return s.sendErrorAndEnd(c, errorMsg)
+		}
+	}
+}
+
+// processOpenAIChatCompletionsStream 解析 /chat/completions SSE 流：
+// - 每行以 "data: " 开头；
+// - 捕获 choices[0].delta.content/reasoning_content 发送为 content 事件；
+// - 收到 "[DONE]" 或 EOF 时发送 test_complete 事件。
+// 作者：mkx  变更：2026-04-22 新增。
+func (s *AccountTestService) processOpenAIChatCompletionsStream(c *gin.Context, body io.Reader) error {
+	reader := bufio.NewReader(body)
+
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+				return nil
+			}
+			return s.sendErrorAndEnd(c, fmt.Sprintf("Stream read error: %s", err.Error()))
+		}
+
+		line = strings.TrimSpace(line)
+		if line == "" || !sseDataPrefix.MatchString(line) {
+			continue
+		}
+
+		jsonStr := sseDataPrefix.ReplaceAllString(line, "")
+		if jsonStr == "[DONE]" {
+			s.sendEvent(c, TestEvent{Type: "test_complete", Success: true})
+			return nil
+		}
+
+		var data map[string]any
+		if err := json.Unmarshal([]byte(jsonStr), &data); err != nil {
+			continue
+		}
+
+		if choices, ok := data["choices"].([]any); ok && len(choices) > 0 {
+			if choice, ok := choices[0].(map[string]any); ok {
+				if delta, ok := choice["delta"].(map[string]any); ok {
+					if text, ok := delta["content"].(string); ok && text != "" {
+						s.sendEvent(c, TestEvent{Type: "content", Text: text})
+					} else if text, ok := delta["reasoning_content"].(string); ok && text != "" {
+						s.sendEvent(c, TestEvent{Type: "content", Text: text})
+					}
+				}
+			}
+		}
+
+		if errData, ok := data["error"].(map[string]any); ok {
+			errorMsg := "Unknown error"
+			if msg, ok := errData["message"].(string); ok {
+				errorMsg = msg
 			}
 			return s.sendErrorAndEnd(c, errorMsg)
 		}

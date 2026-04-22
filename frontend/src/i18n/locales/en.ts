@@ -2365,6 +2365,9 @@ export default {
         oauthPassthrough: 'Auto passthrough (auth only)',
         oauthPassthroughDesc:
           'When enabled, this OpenAI account uses automatic passthrough: the gateway forwards request/response as-is and only swaps auth, while keeping billing/concurrency/audit and necessary safety filtering.',
+        chatCompletionsNative: 'Native Chat Completions passthrough',
+        chatCompletionsNativeDesc:
+          'API Key accounts only. When enabled, requests are forwarded to the upstream /v1/chat/completions endpoint as-is without Responses API conversion. Use this for OpenAI-compatible upstreams that only implement /v1/chat/completions (e.g. GLM, DeepSeek, Kimi, new-api gateways).',
         responsesWebsocketsV2: 'Responses WebSocket v2',
         responsesWebsocketsV2Desc:
           'Disabled by default. Enable to allow responses_websockets_v2 capability (still gated by global and account-type switches).',

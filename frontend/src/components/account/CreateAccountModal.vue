@@ -2347,6 +2347,37 @@
  </div>
  </div>
 
+ <!-- OpenAI Chat Completions 原生直通开关（仅 API Key） -->
+ <!-- 作者：mkx  变更：2026-04-22 新增 -->
+ <div
+ v-if="form.platform === 'openai' && accountCategory === 'apikey'"
+ class="border-t border-gray-200 pt-4"
+ >
+ <div class="flex items-center justify-between">
+ <div>
+ <label class="input-label mb-0">{{ t('admin.accounts.openai.chatCompletionsNative') }}</label>
+ <p class="mt-1 text-xs text-gray-500">
+ {{ t('admin.accounts.openai.chatCompletionsNativeDesc') }}
+ </p>
+ </div>
+ <button
+ type="button"
+ @click="openaiChatCompletionsNativeEnabled = !openaiChatCompletionsNativeEnabled"
+ :class="[
+ 'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+ openaiChatCompletionsNativeEnabled ? 'bg-primary-600' : 'bg-gray-200 '
+ ]"
+ >
+ <span
+ :class="[
+ 'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+ openaiChatCompletionsNativeEnabled ? 'translate-x-5' : 'translate-x-0'
+ ]"
+ />
+ </button>
+ </div>
+ </div>
+
  <!-- OpenAI WS Mode 三态（off/ctx_pool/passthrough） -->
  <div
  v-if="form.platform === 'openai' && (accountCategory === 'oauth-based' || accountCategory === 'apikey')"
@@ -3070,6 +3101,8 @@ const customErrorCodeInput = ref<number | null>(null)
 const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(true)
 const openaiPassthroughEnabled = ref(false)
+// 作者：mkx  变更：2026-04-22 新增 — OpenAI Chat Completions 原生直通开关（仅 API Key）
+const openaiChatCompletionsNativeEnabled = ref(false)
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const codexCLIOnlyEnabled = ref(false)
@@ -3409,6 +3442,7 @@ watch(
  }
  if (newPlatform !== 'openai') {
  openaiPassthroughEnabled.value = false
+ openaiChatCompletionsNativeEnabled.value = false
  openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
  openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
  codexCLIOnlyEnabled.value = false
@@ -3796,6 +3830,7 @@ const resetForm = () => {
  interceptWarmupRequests.value = false
  autoPauseOnExpired.value = true
  openaiPassthroughEnabled.value = false
+ openaiChatCompletionsNativeEnabled.value = false
  openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
  openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
  codexCLIOnlyEnabled.value = false
@@ -3866,6 +3901,12 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
  } else {
  delete extra.openai_passthrough
  delete extra.openai_oauth_passthrough
+ }
+ // 作者：mkx  变更：2026-04-22 新增 — 仅 API Key 账号写入 CC 原生直通开关
+ if (accountCategory.value === 'apikey' && openaiChatCompletionsNativeEnabled.value) {
+ extra.openai_chat_completions_mode_enabled = true
+ } else {
+ delete extra.openai_chat_completions_mode_enabled
  }
 
  if (accountCategory.value === 'oauth-based' && codexCLIOnlyEnabled.value) {

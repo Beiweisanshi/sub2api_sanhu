@@ -1097,6 +1097,37 @@
  </div>
  </div>
 
+ <!-- OpenAI Chat Completions 原生直通开关（仅 API Key） -->
+ <!-- 作者：mkx  变更：2026-04-22 新增 -->
+ <div
+ v-if="account?.platform === 'openai' && account?.type === 'apikey'"
+ class="border-t border-gray-200 pt-4"
+ >
+ <div class="flex items-center justify-between">
+ <div>
+ <label class="input-label mb-0">{{ t('admin.accounts.openai.chatCompletionsNative') }}</label>
+ <p class="mt-1 text-xs text-gray-500">
+ {{ t('admin.accounts.openai.chatCompletionsNativeDesc') }}
+ </p>
+ </div>
+ <button
+ type="button"
+ @click="openaiChatCompletionsNativeEnabled = !openaiChatCompletionsNativeEnabled"
+ :class="[
+ 'relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2',
+ openaiChatCompletionsNativeEnabled ? 'bg-primary-600' : 'bg-gray-200 '
+ ]"
+ >
+ <span
+ :class="[
+ 'pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out',
+ openaiChatCompletionsNativeEnabled ? 'translate-x-5' : 'translate-x-0'
+ ]"
+ />
+ </button>
+ </div>
+ </div>
+
  <!-- OpenAI WS Mode 三态（off/ctx_pool/passthrough） -->
  <div
  v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'apikey')"
@@ -2007,6 +2038,9 @@ const usagePercentLimit = ref<number | null>(null)
 
 // OpenAI 自动透传开关（OAuth/API Key）
 const openaiPassthroughEnabled = ref(false)
+// OpenAI Chat Completions 原生直通开关（仅 API Key）
+// 作者：mkx  变更：2026-04-22 新增
+const openaiChatCompletionsNativeEnabled = ref(false)
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const openaiAPIKeyResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
 const codexCLIOnlyEnabled = ref(false)
@@ -2192,6 +2226,7 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 
  // Load OpenAI passthrough toggle (OpenAI OAuth/API Key)
  openaiPassthroughEnabled.value = false
+ openaiChatCompletionsNativeEnabled.value = false
  openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
  openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
  codexCLIOnlyEnabled.value = false
@@ -2199,6 +2234,10 @@ const syncFormFromAccount = (newAccount: Account | null) => {
  webSearchEmulationMode.value = 'default'
  if (newAccount.platform === 'openai' && (newAccount.type === 'oauth' || newAccount.type === 'apikey')) {
  openaiPassthroughEnabled.value = extra?.openai_passthrough === true || extra?.openai_oauth_passthrough === true
+ // 作者：mkx  变更：2026-04-22 新增 — 仅 API Key 账号读取 CC 原生直通开关
+ if (newAccount.type === 'apikey') {
+ openaiChatCompletionsNativeEnabled.value = extra?.openai_chat_completions_mode_enabled === true
+ }
  openaiOAuthResponsesWebSocketV2Mode.value = resolveOpenAIWSModeFromExtra(extra, {
  modeKey: 'openai_oauth_responses_websockets_v2_mode',
  enabledKey: 'openai_oauth_responses_websockets_v2_enabled',
@@ -3235,6 +3274,12 @@ const handleSubmit = async () => {
  } else {
  delete newExtra.openai_passthrough
  delete newExtra.openai_oauth_passthrough
+ }
+ // 作者：mkx  变更：2026-04-22 新增 — 仅 API Key 账号写入 CC 原生直通开关
+ if (props.account.type === 'apikey' && openaiChatCompletionsNativeEnabled.value) {
+ newExtra.openai_chat_completions_mode_enabled = true
+ } else {
+ delete newExtra.openai_chat_completions_mode_enabled
  }
 
  if (props.account.type === 'oauth') {
