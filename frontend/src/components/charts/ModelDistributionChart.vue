@@ -330,7 +330,7 @@ const emit = defineEmits<{
 const enableRankingView = computed(() => props.enableRankingView)
 const activeView = ref<'model_distribution' | 'spending_ranking'>('model_distribution')
 
-const chartColors = [...CLAUDE_CHART_PALETTE]
+const chartColors: string[] = [...CLAUDE_CHART_PALETTE]
 
 const displayModelStats = computed(() => {
  const sourceStats = props.source === 'upstream'
@@ -369,7 +369,7 @@ const rankingChartData = computed(() => {
  if (otherRankingItem.value) {
  labels.push(t('admin.dashboard.spendingRankingOther'))
  data.push(otherRankingItem.value.actual_cost)
- backgroundColor.push(CLAUDE_CHART_SERIES.muted)
+ backgroundColor.push(CLAUDE_CHART_SERIES.gray)
  }
 
  return {

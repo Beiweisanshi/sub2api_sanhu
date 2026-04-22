@@ -112,12 +112,12 @@ const labelClass = computed(() => {
  return `${base} bg-orange-200/60 text-orange-800 `
  }
  if (props.platform === 'openai') {
- return `${base} bg-primary-200/60 text-primary-800 `
+ return `${base} bg-emerald-200/60 text-emerald-800 `
  }
  if (props.platform === 'gemini') {
- return `${base} bg-primary-200/60 text-primary-800 `
+ return `${base} bg-blue-200/60 text-blue-800 `
  }
- return `${base} bg-gray-200/60 text-gray-800 `
+ return `${base} bg-violet-200/60 text-violet-800 `
 })
 
 // Badge color based on platform and subscription type
@@ -139,9 +139,9 @@ const badgeClass = computed(() => {
  ? 'bg-sky-100 text-sky-700 '
  : 'bg-sky-50 text-sky-700 '
  }
- // Fallback: 作者：mkx 日期：2026-04-22 默认用中性灰，avoid 与品牌色混淆
+ // Fallback: original violet/emerald theme
  return isSubscription.value
- ? 'bg-gray-100 text-gray-700 '
- : 'bg-gray-50 text-gray-600 '
+ ? 'bg-violet-100 text-violet-700 '
+ : 'bg-emerald-100 text-emerald-700 '
 })
 </script>

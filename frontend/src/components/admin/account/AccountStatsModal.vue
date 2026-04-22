@@ -501,12 +501,12 @@ const stats = ref<AccountUsageStatsResponse | null>(null)
 const chartColors = computed(() => ({
  text: CLAUDE_CHART_TEXT,
  grid: CLAUDE_CHART_GRID,
- actual: CLAUDE_CHART_SERIES.primary,
- actualFill: withAlpha(CLAUDE_CHART_SERIES.primary, '1A'),
- user: CLAUDE_CHART_SERIES.wood,
- userFill: withAlpha(CLAUDE_CHART_SERIES.wood, '14'),
- requests: CLAUDE_CHART_SERIES.clay,
- requestsFill: withAlpha(CLAUDE_CHART_SERIES.clay, '1A')
+ actual: CLAUDE_CHART_SERIES.blue,
+ actualFill: withAlpha(CLAUDE_CHART_SERIES.blue, '1A'),
+ user: CLAUDE_CHART_SERIES.green,
+ userFill: withAlpha(CLAUDE_CHART_SERIES.green, '14'),
+ requests: CLAUDE_CHART_SERIES.orange,
+ requestsFill: withAlpha(CLAUDE_CHART_SERIES.orange, '1A')
 }))
 
 // Line chart data

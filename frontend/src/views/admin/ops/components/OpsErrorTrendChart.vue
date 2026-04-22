@@ -37,11 +37,11 @@ const emit = defineEmits<{
 const { t } = useI18n()
 
 const colors = computed(() => ({
- primary: CLAUDE_CHART_SERIES.ember,
- primaryAlpha: withAlpha(CLAUDE_CHART_SERIES.ember, '20'),
- wood: CLAUDE_CHART_SERIES.wood,
- woodAlpha: withAlpha(CLAUDE_CHART_SERIES.wood, '20'),
- muted: CLAUDE_CHART_SERIES.muted,
+ primary: CLAUDE_CHART_SERIES.red,
+ primaryAlpha: withAlpha(CLAUDE_CHART_SERIES.red, '20'),
+ wood: CLAUDE_CHART_SERIES.violet,
+ woodAlpha: withAlpha(CLAUDE_CHART_SERIES.violet, '20'),
+ muted: CLAUDE_CHART_SERIES.gray,
  grid: CLAUDE_CHART_GRID,
  text: CLAUDE_CHART_TEXT
 }))

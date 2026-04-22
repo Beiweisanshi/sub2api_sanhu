@@ -46,10 +46,10 @@ watch(
 )
 
 const colors = computed(() => ({
- primary: CLAUDE_CHART_SERIES.primary,
- primaryAlpha: withAlpha(CLAUDE_CHART_SERIES.primary, '20'),
- wood: CLAUDE_CHART_SERIES.wood,
- woodAlpha: withAlpha(CLAUDE_CHART_SERIES.wood, '20'),
+ primary: CLAUDE_CHART_SERIES.blue,
+ primaryAlpha: withAlpha(CLAUDE_CHART_SERIES.blue, '20'),
+ wood: CLAUDE_CHART_SERIES.green,
+ woodAlpha: withAlpha(CLAUDE_CHART_SERIES.green, '20'),
  grid: CLAUDE_CHART_GRID,
  text: CLAUDE_CHART_TEXT
 }))

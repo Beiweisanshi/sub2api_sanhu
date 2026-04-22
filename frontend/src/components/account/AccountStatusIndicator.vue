@@ -110,7 +110,7 @@
  <!-- 普通模型限流 -->
  <span
  v-else
- class="inline-flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 text-xs font-medium text-gray-700"
+ class="inline-flex items-center gap-1 rounded bg-purple-100 px-1.5 py-0.5 text-xs font-medium text-purple-700"
  >
  <Icon name="exclamationTriangle" size="xs" :stroke-width="2" />
  {{ formatScopeName(item.model) }}

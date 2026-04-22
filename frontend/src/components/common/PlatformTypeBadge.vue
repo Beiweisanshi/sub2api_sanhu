@@ -189,14 +189,14 @@ const privacyBadge = computed(() => {
  switch (props.privacyMode) {
  // OpenAI states
  case 'training_off':
- return { label: 'Private', icon: shieldCheck, title: t('admin.accounts.privacyTrainingOff'), class: 'bg-primary-100 text-primary-600 ' }
+ return { label: 'Private', icon: shieldCheck, title: t('admin.accounts.privacyTrainingOff'), class: 'bg-green-100 text-green-600 ' }
  case 'training_set_cf_blocked':
  return { label: 'CF', icon: shieldX, title: t('admin.accounts.privacyCfBlocked'), class: 'bg-yellow-100 text-yellow-600 ' }
  case 'training_set_failed':
  return { label: 'Fail', icon: shieldX, title: t('admin.accounts.privacyFailed'), class: 'bg-red-100 text-red-600 ' }
  // Antigravity states
  case 'privacy_set':
- return { label: 'Private', icon: shieldCheck, title: t('admin.accounts.privacyAntigravitySet'), class: 'bg-primary-100 text-primary-600 ' }
+ return { label: 'Private', icon: shieldCheck, title: t('admin.accounts.privacyAntigravitySet'), class: 'bg-green-100 text-green-600 ' }
  case 'privacy_set_failed':
  return { label: 'Fail', icon: shieldX, title: t('admin.accounts.privacyAntigravityFailed'), class: 'bg-red-100 text-red-600 ' }
  default:

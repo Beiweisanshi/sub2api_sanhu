@@ -34,8 +34,8 @@ const props = defineProps<Props>()
 const { t } = useI18n()
 
 const colors = computed(() => ({
- primary: CLAUDE_CHART_SERIES.primary,
- primaryAlpha: withAlpha(CLAUDE_CHART_SERIES.primary, '20'),
+ primary: CLAUDE_CHART_SERIES.teal,
+ primaryAlpha: withAlpha(CLAUDE_CHART_SERIES.teal, '20'),
  grid: CLAUDE_CHART_GRID,
  text: CLAUDE_CHART_TEXT
 }))

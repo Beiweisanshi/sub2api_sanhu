@@ -24,10 +24,10 @@ const emit = defineEmits<{
 const { t } = useI18n()
 
 const colors = computed(() => ({
- primary: CLAUDE_CHART_SERIES.primary,
- wood: CLAUDE_CHART_SERIES.wood,
- clay: CLAUDE_CHART_SERIES.clay,
- muted: CLAUDE_CHART_SERIES.muted,
+ primary: CLAUDE_CHART_SERIES.blue,
+ wood: CLAUDE_CHART_SERIES.red,
+ clay: CLAUDE_CHART_SERIES.amber,
+ muted: CLAUDE_CHART_SERIES.gray,
  text: CLAUDE_CHART_TEXT
 }))
 

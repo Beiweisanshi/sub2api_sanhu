@@ -17,8 +17,8 @@ export function getBillingModeLabel(mode: string | null | undefined, t: (key: st
 
 export function getBillingModeBadgeClass(mode: string | null | undefined): string {
  switch (mode) {
- case BILLING_MODE_PER_REQUEST: return 'bg-gray-100 text-gray-700 '
- case BILLING_MODE_IMAGE: return 'bg-primary-100 text-primary-700 '
- default: return 'bg-primary-100 text-primary-700 '
+ case BILLING_MODE_PER_REQUEST: return 'bg-purple-100 text-purple-700'
+ case BILLING_MODE_IMAGE: return 'bg-pink-100 text-pink-700'
+ default: return 'bg-blue-100 text-blue-700'
  }
 }

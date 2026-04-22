@@ -59,11 +59,11 @@ const props = defineProps<{
 const chartColors = computed(() => ({
  text: CLAUDE_CHART_TEXT,
  grid: CLAUDE_CHART_GRID,
- input: CLAUDE_CHART_SERIES.primary,
- output: CLAUDE_CHART_SERIES.ember,
- cacheCreation: CLAUDE_CHART_SERIES.clay,
- cacheRead: CLAUDE_CHART_SERIES.sand,
- cacheHitRate: CLAUDE_CHART_SERIES.muted
+ input: CLAUDE_CHART_SERIES.blue,
+ output: CLAUDE_CHART_SERIES.green,
+ cacheCreation: CLAUDE_CHART_SERIES.amber,
+ cacheRead: CLAUDE_CHART_SERIES.cyan,
+ cacheHitRate: CLAUDE_CHART_SERIES.violet
 }))
 
 const chartData = computed(() => {
