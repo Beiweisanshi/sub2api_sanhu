@@ -466,7 +466,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_RequiredWSV2_NoAvailabl
 	require.Equal(t, 0, decision.CandidateCount)
 }
 
-func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceTopKFallback(t *testing.T) {
+func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceFallback(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(11)
 	accounts := []Account{
@@ -499,22 +499,16 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceTopKFallback
 		},
 	}
 
-	cfg := &config.Config{}
-	cfg.Gateway.OpenAIWS.LBTopK = 2
-	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Priority = 0.4
-	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Load = 1.0
-	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Queue = 1.0
-	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.ErrorRate = 0.2
-	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT = 0.1
-
 	concurrencyCache := stubConcurrencyCache{
 		loadMap: map[int64]*AccountLoadInfo{
 			3001: {AccountID: 3001, LoadRate: 95, WaitingCount: 8},
 			3002: {AccountID: 3002, LoadRate: 20, WaitingCount: 1},
 			3003: {AccountID: 3003, LoadRate: 10, WaitingCount: 0},
 		},
+		// 3003（最轻）和 3001（最重）均失败，只有 3002 可成功获取
 		acquireResults: map[int64]bool{
-			3003: false, // top1 失败，必须回退到 top-K 的下一候选
+			3003: false,
+			3001: false,
 			3002: true,
 		},
 	}
@@ -522,7 +516,6 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceTopKFallback
 	svc := &OpenAIGatewayService{
 		accountRepo:        stubOpenAIAccountRepo{accounts: accounts},
 		cache:              &stubGatewayCache{},
-		cfg:                cfg,
 		concurrencyService: NewConcurrencyService(concurrencyCache),
 	}
 
@@ -541,7 +534,7 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceTopKFallback
 	require.Equal(t, int64(3002), selection.Account.ID)
 	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
 	require.Equal(t, 3, decision.CandidateCount)
-	require.Equal(t, 2, decision.TopK)
+	require.Equal(t, 3, decision.TopK) // 三个账号同优先级，topTier = 全部
 	require.Greater(t, decision.LoadSkew, 0.0)
 	if selection.ReleaseFunc != nil {
 		selection.ReleaseFunc()
@@ -639,59 +632,22 @@ func TestOpenAIAccountRuntimeStats_ReportConcurrent(t *testing.T) {
 	}
 }
 
-func TestSelectTopKOpenAICandidates(t *testing.T) {
-	candidates := []openAIAccountCandidateScore{
-		{
-			account:  &Account{ID: 11, Priority: 2},
-			loadInfo: &AccountLoadInfo{LoadRate: 10, WaitingCount: 1},
-			score:    10.0,
-		},
-		{
-			account:  &Account{ID: 12, Priority: 1},
-			loadInfo: &AccountLoadInfo{LoadRate: 20, WaitingCount: 1},
-			score:    9.5,
-		},
-		{
-			account:  &Account{ID: 13, Priority: 1},
-			loadInfo: &AccountLoadInfo{LoadRate: 30, WaitingCount: 0},
-			score:    10.0,
-		},
-		{
-			account:  &Account{ID: 14, Priority: 0},
-			loadInfo: &AccountLoadInfo{LoadRate: 40, WaitingCount: 0},
-			score:    8.0,
-		},
-	}
-
-	top2 := selectTopKOpenAICandidates(candidates, 2)
-	require.Len(t, top2, 2)
-	require.Equal(t, int64(13), top2[0].account.ID)
-	require.Equal(t, int64(11), top2[1].account.ID)
-
-	topAll := selectTopKOpenAICandidates(candidates, 8)
-	require.Len(t, topAll, len(candidates))
-	require.Equal(t, int64(13), topAll[0].account.ID)
-	require.Equal(t, int64(11), topAll[1].account.ID)
-	require.Equal(t, int64(12), topAll[2].account.ID)
-	require.Equal(t, int64(14), topAll[3].account.ID)
-}
-
 func TestBuildOpenAIWeightedSelectionOrder_DeterministicBySessionSeed(t *testing.T) {
-	candidates := []openAIAccountCandidateScore{
+	candidates := []openAIAccountCandidate{
 		{
 			account:  &Account{ID: 101},
 			loadInfo: &AccountLoadInfo{LoadRate: 10, WaitingCount: 0},
-			score:    4.2,
+			weight:   0.9,
 		},
 		{
 			account:  &Account{ID: 102},
 			loadInfo: &AccountLoadInfo{LoadRate: 30, WaitingCount: 1},
-			score:    3.5,
+			weight:   0.7,
 		},
 		{
 			account:  &Account{ID: 103},
 			loadInfo: &AccountLoadInfo{LoadRate: 50, WaitingCount: 2},
-			score:    2.1,
+			weight:   0.5,
 		},
 	}
 	req := OpenAIAccountScheduleRequest{
@@ -741,14 +697,6 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceDistributesA
 			Priority:    0,
 		},
 	}
-	cfg := &config.Config{}
-	cfg.Gateway.OpenAIWS.LBTopK = 3
-	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Priority = 1
-	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Load = 1
-	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Queue = 1
-	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.ErrorRate = 1
-	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT = 1
-
 	concurrencyCache := stubConcurrencyCache{
 		loadMap: map[int64]*AccountLoadInfo{
 			5101: {AccountID: 5101, LoadRate: 20, WaitingCount: 1},
@@ -759,7 +707,6 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_LoadBalanceDistributesA
 	svc := &OpenAIGatewayService{
 		accountRepo:        stubOpenAIAccountRepo{accounts: accounts},
 		cache:              &stubGatewayCache{sessionBindings: map[string]int64{}},
-		cfg:                cfg,
 		concurrencyService: NewConcurrencyService(concurrencyCache),
 	}
 
@@ -801,22 +748,22 @@ func TestDeriveOpenAISelectionSeed_NoAffinityAddsEntropy(t *testing.T) {
 	require.NotEqual(t, seed1, seed2)
 }
 
-func TestBuildOpenAIWeightedSelectionOrder_HandlesInvalidScores(t *testing.T) {
-	candidates := []openAIAccountCandidateScore{
+func TestBuildOpenAIWeightedSelectionOrder_HandlesInvalidWeights(t *testing.T) {
+	candidates := []openAIAccountCandidate{
 		{
 			account:  &Account{ID: 901},
 			loadInfo: &AccountLoadInfo{LoadRate: 5, WaitingCount: 0},
-			score:    math.NaN(),
+			weight:   math.NaN(),
 		},
 		{
 			account:  &Account{ID: 902},
 			loadInfo: &AccountLoadInfo{LoadRate: 5, WaitingCount: 0},
-			score:    math.Inf(1),
+			weight:   math.Inf(1),
 		},
 		{
 			account:  &Account{ID: 903},
 			loadInfo: &AccountLoadInfo{LoadRate: 5, WaitingCount: 0},
-			score:    -1,
+			weight:   -1,
 		},
 	}
 	req := OpenAIAccountScheduleRequest{
@@ -839,24 +786,6 @@ func TestOpenAISelectionRNG_SeedZeroStillWorks(t *testing.T) {
 	require.NotEqual(t, v1, v2)
 	require.GreaterOrEqual(t, rng.nextFloat64(), 0.0)
 	require.Less(t, rng.nextFloat64(), 1.0)
-}
-
-func TestOpenAIAccountCandidateHeap_PushPopAndInvalidType(t *testing.T) {
-	h := openAIAccountCandidateHeap{}
-	h.Push(openAIAccountCandidateScore{
-		account:  &Account{ID: 7001},
-		loadInfo: &AccountLoadInfo{LoadRate: 0, WaitingCount: 0},
-		score:    1.0,
-	})
-	require.Equal(t, 1, h.Len())
-	popped, ok := h.Pop().(openAIAccountCandidateScore)
-	require.True(t, ok)
-	require.Equal(t, int64(7001), popped.account.ID)
-	require.Equal(t, 0, h.Len())
-
-	require.Panics(t, func() {
-		h.Push("bad_element_type")
-	})
 }
 
 func TestClamp01_AllBranches(t *testing.T) {
@@ -911,34 +840,12 @@ func TestOpenAIGatewayService_SchedulerWrappersAndDefaults(t *testing.T) {
 	svc.RecordOpenAIAccountSwitch()
 	snapshot := svc.SnapshotOpenAIAccountSchedulerMetrics()
 	require.GreaterOrEqual(t, snapshot.AccountSwitchTotal, int64(1))
-	require.Equal(t, 7, svc.openAIWSLBTopK())
 	require.Equal(t, openaiStickySessionTTL, svc.openAIWSSessionStickyTTL())
 
-	defaultWeights := svc.openAIWSSchedulerWeights()
-	require.Equal(t, 1.0, defaultWeights.Priority)
-	require.Equal(t, 1.0, defaultWeights.Load)
-	require.Equal(t, 0.7, defaultWeights.Queue)
-	require.Equal(t, 0.8, defaultWeights.ErrorRate)
-	require.Equal(t, 0.5, defaultWeights.TTFT)
-
 	cfg := &config.Config{}
-	cfg.Gateway.OpenAIWS.LBTopK = 9
 	cfg.Gateway.OpenAIWS.StickySessionTTLSeconds = 180
-	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Priority = 0.2
-	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Load = 0.3
-	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Queue = 0.4
-	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.ErrorRate = 0.5
-	cfg.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT = 0.6
 	svcWithCfg := &OpenAIGatewayService{cfg: cfg}
-
-	require.Equal(t, 9, svcWithCfg.openAIWSLBTopK())
 	require.Equal(t, 180*time.Second, svcWithCfg.openAIWSSessionStickyTTL())
-	customWeights := svcWithCfg.openAIWSSchedulerWeights()
-	require.Equal(t, 0.2, customWeights.Priority)
-	require.Equal(t, 0.3, customWeights.Load)
-	require.Equal(t, 0.4, customWeights.Queue)
-	require.Equal(t, 0.5, customWeights.ErrorRate)
-	require.Equal(t, 0.6, customWeights.TTFT)
 }
 
 func TestDefaultOpenAIAccountScheduler_IsAccountTransportCompatible_Branches(t *testing.T) {

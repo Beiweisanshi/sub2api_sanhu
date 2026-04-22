@@ -1,79 +1,63 @@
 package service
 
 import (
-	"sort"
 	"testing"
 )
 
-func buildOpenAISchedulerBenchmarkCandidates(size int) []openAIAccountCandidateScore {
+func buildOpenAISchedulerBenchmarkCandidates(size int) []openAIAccountCandidate {
 	if size <= 0 {
 		return nil
 	}
-	candidates := make([]openAIAccountCandidateScore, 0, size)
+	candidates := make([]openAIAccountCandidate, 0, size)
 	for i := 0; i < size; i++ {
 		accountID := int64(10_000 + i)
-		candidates = append(candidates, openAIAccountCandidateScore{
+		loadRate := (i * 17) % 100
+		errorRate := float64((i*5)%100) / 100.0
+		availFactor := 1.0 - float64(loadRate)/100.0
+		healthFactor := 1.0 - errorRate
+		if availFactor < 0.1 {
+			availFactor = 0.1
+		}
+		if healthFactor < 0.1 {
+			healthFactor = 0.1
+		}
+		candidates = append(candidates, openAIAccountCandidate{
 			account: &Account{
 				ID:       accountID,
 				Priority: i % 7,
 			},
 			loadInfo: &AccountLoadInfo{
 				AccountID:    accountID,
-				LoadRate:     (i * 17) % 100,
+				LoadRate:     loadRate,
 				WaitingCount: (i * 11) % 13,
 			},
-			score:     float64((i*29)%1000) / 100,
-			errorRate: float64((i * 5) % 100 / 100),
-			ttft:      float64(30 + (i*3)%500),
-			hasTTFT:   i%3 != 0,
+			weight: availFactor * healthFactor,
 		})
 	}
 	return candidates
 }
 
-func selectTopKOpenAICandidatesBySortBenchmark(candidates []openAIAccountCandidateScore, topK int) []openAIAccountCandidateScore {
-	if len(candidates) == 0 {
-		return nil
-	}
-	if topK <= 0 {
-		topK = 1
-	}
-	ranked := append([]openAIAccountCandidateScore(nil), candidates...)
-	sort.Slice(ranked, func(i, j int) bool {
-		return isOpenAIAccountCandidateBetter(ranked[i], ranked[j])
-	})
-	if topK > len(ranked) {
-		topK = len(ranked)
-	}
-	return ranked[:topK]
-}
-
-func BenchmarkOpenAIAccountSchedulerSelectTopK(b *testing.B) {
+func BenchmarkOpenAIAccountSchedulerWeightedSelection(b *testing.B) {
 	cases := []struct {
 		name string
 		size int
-		topK int
 	}{
-		{name: "n_16_k_3", size: 16, topK: 3},
-		{name: "n_64_k_3", size: 64, topK: 3},
-		{name: "n_256_k_5", size: 256, topK: 5},
+		{name: "n_16", size: 16},
+		{name: "n_64", size: 64},
+		{name: "n_256", size: 256},
+	}
+
+	req := OpenAIAccountScheduleRequest{
+		SessionHash:    "bench_session",
+		RequestedModel: "gpt-5.1",
 	}
 
 	for _, tc := range cases {
 		candidates := buildOpenAISchedulerBenchmarkCandidates(tc.size)
-		b.Run(tc.name+"/heap_topk", func(b *testing.B) {
+		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				result := selectTopKOpenAICandidates(candidates, tc.topK)
-				if len(result) == 0 {
-					b.Fatal("unexpected empty result")
-				}
-			}
-		})
-		b.Run(tc.name+"/full_sort", func(b *testing.B) {
-			b.ReportAllocs()
-			for i := 0; i < b.N; i++ {
-				result := selectTopKOpenAICandidatesBySortBenchmark(candidates, tc.topK)
+				result := buildOpenAIWeightedSelectionOrder(candidates, req)
 				if len(result) == 0 {
 					b.Fatal("unexpected empty result")
 				}

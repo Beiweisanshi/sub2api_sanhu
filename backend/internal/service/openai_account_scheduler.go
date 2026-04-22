@@ -1,7 +1,6 @@
 package service
 
 import (
-	"container/heap"
 	"context"
 	"errors"
 	"fmt"
@@ -363,95 +362,11 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 	return nil, nil
 }
 
-type openAIAccountCandidateScore struct {
-	account   *Account
-	loadInfo  *AccountLoadInfo
-	score     float64
-	errorRate float64
-	ttft      float64
-	hasTTFT   bool
-}
-
-type openAIAccountCandidateHeap []openAIAccountCandidateScore
-
-func (h openAIAccountCandidateHeap) Len() int {
-	return len(h)
-}
-
-func (h openAIAccountCandidateHeap) Less(i, j int) bool {
-	// 最小堆根节点保存“最差”候选，便于 O(log k) 维护 topK。
-	return isOpenAIAccountCandidateBetter(h[j], h[i])
-}
-
-func (h openAIAccountCandidateHeap) Swap(i, j int) {
-	h[i], h[j] = h[j], h[i]
-}
-
-func (h *openAIAccountCandidateHeap) Push(x any) {
-	candidate, ok := x.(openAIAccountCandidateScore)
-	if !ok {
-		panic("openAIAccountCandidateHeap: invalid element type")
-	}
-	*h = append(*h, candidate)
-}
-
-func (h *openAIAccountCandidateHeap) Pop() any {
-	old := *h
-	n := len(old)
-	last := old[n-1]
-	*h = old[:n-1]
-	return last
-}
-
-func isOpenAIAccountCandidateBetter(left openAIAccountCandidateScore, right openAIAccountCandidateScore) bool {
-	if left.score != right.score {
-		return left.score > right.score
-	}
-	if left.account.Priority != right.account.Priority {
-		return left.account.Priority < right.account.Priority
-	}
-	if left.loadInfo.LoadRate != right.loadInfo.LoadRate {
-		return left.loadInfo.LoadRate < right.loadInfo.LoadRate
-	}
-	if left.loadInfo.WaitingCount != right.loadInfo.WaitingCount {
-		return left.loadInfo.WaitingCount < right.loadInfo.WaitingCount
-	}
-	return left.account.ID < right.account.ID
-}
-
-func selectTopKOpenAICandidates(candidates []openAIAccountCandidateScore, topK int) []openAIAccountCandidateScore {
-	if len(candidates) == 0 {
-		return nil
-	}
-	if topK <= 0 {
-		topK = 1
-	}
-	if topK >= len(candidates) {
-		ranked := append([]openAIAccountCandidateScore(nil), candidates...)
-		sort.Slice(ranked, func(i, j int) bool {
-			return isOpenAIAccountCandidateBetter(ranked[i], ranked[j])
-		})
-		return ranked
-	}
-
-	best := make(openAIAccountCandidateHeap, 0, topK)
-	for _, candidate := range candidates {
-		if len(best) < topK {
-			heap.Push(&best, candidate)
-			continue
-		}
-		if isOpenAIAccountCandidateBetter(candidate, best[0]) {
-			best[0] = candidate
-			heap.Fix(&best, 0)
-		}
-	}
-
-	ranked := make([]openAIAccountCandidateScore, len(best))
-	copy(ranked, best)
-	sort.Slice(ranked, func(i, j int) bool {
-		return isOpenAIAccountCandidateBetter(ranked[i], ranked[j])
-	})
-	return ranked
+// openAIAccountCandidate 调度候选账号，weight 为按比例随机选择的权重。
+type openAIAccountCandidate struct {
+	account  *Account
+	loadInfo *AccountLoadInfo
+	weight   float64
 }
 
 type openAISelectionRNG struct {
@@ -509,32 +424,26 @@ func deriveOpenAISelectionSeed(req OpenAIAccountScheduleRequest) uint64 {
 	return seed
 }
 
+// buildOpenAIWeightedSelectionOrder 按 weight 比例生成随机排列，weight 无效时回退为 1.0。
 func buildOpenAIWeightedSelectionOrder(
-	candidates []openAIAccountCandidateScore,
+	candidates []openAIAccountCandidate,
 	req OpenAIAccountScheduleRequest,
-) []openAIAccountCandidateScore {
+) []openAIAccountCandidate {
 	if len(candidates) <= 1 {
-		return append([]openAIAccountCandidateScore(nil), candidates...)
+		return append([]openAIAccountCandidate(nil), candidates...)
 	}
 
-	pool := append([]openAIAccountCandidateScore(nil), candidates...)
+	pool := append([]openAIAccountCandidate(nil), candidates...)
 	weights := make([]float64, len(pool))
-	minScore := pool[0].score
-	for i := 1; i < len(pool); i++ {
-		if pool[i].score < minScore {
-			minScore = pool[i].score
-		}
-	}
 	for i := range pool {
-		// 将 top-K 分值平移到正区间，避免“单一最高分账号”长期垄断。
-		weight := (pool[i].score - minScore) + 1.0
-		if math.IsNaN(weight) || math.IsInf(weight, 0) || weight <= 0 {
-			weight = 1.0
+		w := pool[i].weight
+		if math.IsNaN(w) || math.IsInf(w, 0) || w <= 0 {
+			w = 1.0
 		}
-		weights[i] = weight
+		weights[i] = w
 	}
 
-	order := make([]openAIAccountCandidateScore, 0, len(pool))
+	order := make([]openAIAccountCandidate, 0, len(pool))
 	rng := newOpenAISelectionRNG(deriveOpenAISelectionSeed(req))
 	for len(pool) > 0 {
 		total := 0.0
@@ -576,14 +485,18 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		return nil, 0, 0, 0, errors.New("no available OpenAI accounts")
 	}
 
-	// require_privacy_set: 获取分组信息
 	var schedGroup *Group
 	if req.GroupID != nil && s.service.schedulerSnapshot != nil {
 		schedGroup, _ = s.service.schedulerSnapshot.GetGroupByID(ctx, *req.GroupID)
 	}
 
-	filtered := make([]*Account, 0, len(accounts))
-	loadReq := make([]AccountWithConcurrency, 0, len(accounts))
+	type pendingAccount struct {
+		acc *Account
+		lc  AccountWithConcurrency
+	}
+
+	// 过滤出全部合法账号，批量获取负载信息
+	pending := make([]pendingAccount, 0, len(accounts))
 	for i := range accounts {
 		account := &accounts[i]
 		if req.ExcludedIDs != nil {
@@ -594,7 +507,6 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		if !account.IsSchedulable() || !account.IsOpenAI() {
 			continue
 		}
-		// require_privacy_set: 跳过 privacy 未设置的账号并标记异常
 		if schedGroup != nil && schedGroup.RequirePrivacySet && !account.IsPrivacySet() {
 			_ = s.service.accountRepo.SetError(ctx, account.ID,
 				fmt.Sprintf("Privacy not set, required by group [%s]", schedGroup.Name))
@@ -606,16 +518,19 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		if !s.isAccountTransportCompatible(account, req.RequiredTransport) {
 			continue
 		}
-		filtered = append(filtered, account)
-		loadReq = append(loadReq, AccountWithConcurrency{
-			ID:             account.ID,
-			MaxConcurrency: account.EffectiveLoadFactor(),
+		pending = append(pending, pendingAccount{
+			acc: account,
+			lc:  AccountWithConcurrency{ID: account.ID, MaxConcurrency: account.EffectiveLoadFactor()},
 		})
 	}
-	if len(filtered) == 0 {
+	if len(pending) == 0 {
 		return nil, 0, 0, 0, errors.New("no available OpenAI accounts")
 	}
 
+	loadReq := make([]AccountWithConcurrency, len(pending))
+	for i, p := range pending {
+		loadReq[i] = p.lc
+	}
 	loadMap := map[int64]*AccountLoadInfo{}
 	if s.service.concurrencyService != nil {
 		if batchLoad, loadErr := s.service.concurrencyService.GetAccountsLoadBatch(ctx, loadReq); loadErr == nil {
@@ -623,131 +538,109 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 		}
 	}
 
-	minPriority, maxPriority := filtered[0].Priority, filtered[0].Priority
-	maxWaiting := 1
+	// 按 Priority 分组，计算各账号权重（可用容量因子 × 健康因子）
+	type priorityGroup struct {
+		priority   int
+		candidates []openAIAccountCandidate
+	}
+	groupMap := map[int]*priorityGroup{}
+	priOrder := make([]int, 0)
+
 	loadRateSum := 0.0
 	loadRateSumSquares := 0.0
-	minTTFT, maxTTFT := 0.0, 0.0
-	hasTTFTSample := false
-	candidates := make([]openAIAccountCandidateScore, 0, len(filtered))
-	for _, account := range filtered {
-		loadInfo := loadMap[account.ID]
+	for _, item := range pending {
+		loadInfo := loadMap[item.acc.ID]
 		if loadInfo == nil {
-			loadInfo = &AccountLoadInfo{AccountID: account.ID}
-		}
-		if account.Priority < minPriority {
-			minPriority = account.Priority
-		}
-		if account.Priority > maxPriority {
-			maxPriority = account.Priority
-		}
-		if loadInfo.WaitingCount > maxWaiting {
-			maxWaiting = loadInfo.WaitingCount
-		}
-		errorRate, ttft, hasTTFT := s.stats.snapshot(account.ID)
-		if hasTTFT && ttft > 0 {
-			if !hasTTFTSample {
-				minTTFT, maxTTFT = ttft, ttft
-				hasTTFTSample = true
-			} else {
-				if ttft < minTTFT {
-					minTTFT = ttft
-				}
-				if ttft > maxTTFT {
-					maxTTFT = ttft
-				}
-			}
+			loadInfo = &AccountLoadInfo{AccountID: item.acc.ID}
 		}
 		loadRate := float64(loadInfo.LoadRate)
 		loadRateSum += loadRate
 		loadRateSumSquares += loadRate * loadRate
-		candidates = append(candidates, openAIAccountCandidateScore{
-			account:   account,
-			loadInfo:  loadInfo,
-			errorRate: errorRate,
-			ttft:      ttft,
-			hasTTFT:   hasTTFT,
+
+		errorRate, _, _ := s.stats.snapshot(item.acc.ID)
+		availFactor := math.Max(0.1, 1.0-loadRate/100.0)
+		healthFactor := math.Max(0.1, 1.0-errorRate)
+
+		pri := item.acc.Priority
+		g, exists := groupMap[pri]
+		if !exists {
+			g = &priorityGroup{priority: pri}
+			groupMap[pri] = g
+			priOrder = append(priOrder, pri)
+		}
+		g.candidates = append(g.candidates, openAIAccountCandidate{
+			account:  item.acc,
+			loadInfo: loadInfo,
+			weight:   availFactor * healthFactor,
 		})
 	}
-	loadSkew := calcLoadSkewByMoments(loadRateSum, loadRateSumSquares, len(candidates))
+	loadSkew := calcLoadSkewByMoments(loadRateSum, loadRateSumSquares, len(pending))
 
-	weights := s.service.openAIWSSchedulerWeights()
-	for i := range candidates {
-		item := &candidates[i]
-		priorityFactor := 1.0
-		if maxPriority > minPriority {
-			priorityFactor = 1 - float64(item.account.Priority-minPriority)/float64(maxPriority-minPriority)
-		}
-		loadFactor := 1 - clamp01(float64(item.loadInfo.LoadRate)/100.0)
-		queueFactor := 1 - clamp01(float64(item.loadInfo.WaitingCount)/float64(maxWaiting))
-		errorFactor := 1 - clamp01(item.errorRate)
-		ttftFactor := 0.5
-		if item.hasTTFT && hasTTFTSample && maxTTFT > minTTFT {
-			ttftFactor = 1 - clamp01((item.ttft-minTTFT)/(maxTTFT-minTTFT))
-		}
-
-		item.score = weights.Priority*priorityFactor +
-			weights.Load*loadFactor +
-			weights.Queue*queueFactor +
-			weights.ErrorRate*errorFactor +
-			weights.TTFT*ttftFactor
+	// 按优先级升序排列（Priority 值越小优先级越高）
+	sort.Ints(priOrder)
+	groups := make([]priorityGroup, 0, len(priOrder))
+	for _, pri := range priOrder {
+		groups = append(groups, *groupMap[pri])
 	}
+	topTierSize := len(groups[0].candidates)
 
-	topK := s.service.openAIWSLBTopK()
-	if topK > len(candidates) {
-		topK = len(candidates)
-	}
-	if topK <= 0 {
-		topK = 1
-	}
-	rankedCandidates := selectTopKOpenAICandidates(candidates, topK)
-	selectionOrder := buildOpenAIWeightedSelectionOrder(rankedCandidates, req)
-
-	for i := 0; i < len(selectionOrder); i++ {
-		candidate := selectionOrder[i]
-		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel)
-		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
-			continue
-		}
-		fresh = s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.RequestedModel)
-		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
-			continue
-		}
-		result, acquireErr := s.service.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
-		if acquireErr != nil {
-			return nil, len(candidates), topK, loadSkew, acquireErr
-		}
-		if result != nil && result.Acquired {
-			if req.SessionHash != "" {
-				_ = s.service.BindStickySession(ctx, req.GroupID, req.SessionHash, fresh.ID)
-			}
-			return &AccountSelectionResult{
-				Account:     fresh,
-				Acquired:    true,
-				ReleaseFunc: result.ReleaseFunc,
-			}, len(candidates), topK, loadSkew, nil
-		}
-	}
-
+	// 依次尝试各优先级组，组内按权重概率选择。
+	// 只有当前组所有账号均无法通过 freshCheck+dbRecheck 时，才降级到下一组。
+	// 只要有账号通过双重检查（即使并发槽已满），就在当前组返回 WaitPlan，不再降级。
 	cfg := s.service.schedulingConfig()
-	// WaitPlan.MaxConcurrency 使用 Concurrency（非 EffectiveLoadFactor），因为 WaitPlan 控制的是 Redis 实际并发槽位等待。
-	for _, candidate := range selectionOrder {
-		fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, candidate.account, req.RequestedModel)
-		if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
-			continue
+	for _, group := range groups {
+		selectionOrder := buildOpenAIWeightedSelectionOrder(group.candidates, req)
+
+		anyTrulySchedulable := false
+		var waitPlanCandidate *Account
+
+		for _, c := range selectionOrder {
+			fresh := s.service.resolveFreshSchedulableOpenAIAccount(ctx, c.account, req.RequestedModel)
+			if fresh == nil || !s.isAccountTransportCompatible(fresh, req.RequiredTransport) {
+				continue
+			}
+			recheckFresh := s.service.recheckSelectedOpenAIAccountFromDB(ctx, fresh, req.RequestedModel)
+			if recheckFresh == nil || !s.isAccountTransportCompatible(recheckFresh, req.RequiredTransport) {
+				continue
+			}
+			// 账号通过双重检查，可作为 WaitPlan 候选
+			anyTrulySchedulable = true
+			if waitPlanCandidate == nil {
+				waitPlanCandidate = recheckFresh
+			}
+			result, acquireErr := s.service.tryAcquireAccountSlot(ctx, recheckFresh.ID, recheckFresh.Concurrency)
+			if acquireErr != nil {
+				return nil, len(pending), topTierSize, loadSkew, acquireErr
+			}
+			if result != nil && result.Acquired {
+				if req.SessionHash != "" {
+					_ = s.service.BindStickySession(ctx, req.GroupID, req.SessionHash, recheckFresh.ID)
+				}
+				return &AccountSelectionResult{
+					Account:     recheckFresh,
+					Acquired:    true,
+					ReleaseFunc: result.ReleaseFunc,
+				}, len(pending), topTierSize, loadSkew, nil
+			}
 		}
-		return &AccountSelectionResult{
-			Account: fresh,
-			WaitPlan: &AccountWaitPlan{
-				AccountID:      fresh.ID,
-				MaxConcurrency: fresh.Concurrency,
-				Timeout:        cfg.FallbackWaitTimeout,
-				MaxWaiting:     cfg.FallbackMaxWaiting,
-			},
-		}, len(candidates), topK, loadSkew, nil
+
+		// 当前组有可调度账号但槽位已满：返回 WaitPlan，不降级到下一优先级组
+		// WaitPlan.MaxConcurrency 使用 Concurrency（非 EffectiveLoadFactor），控制 Redis 槽位等待。
+		if anyTrulySchedulable && waitPlanCandidate != nil {
+			return &AccountSelectionResult{
+				Account: waitPlanCandidate,
+				WaitPlan: &AccountWaitPlan{
+					AccountID:      waitPlanCandidate.ID,
+					MaxConcurrency: waitPlanCandidate.Concurrency,
+					Timeout:        cfg.FallbackWaitTimeout,
+					MaxWaiting:     cfg.FallbackMaxWaiting,
+				},
+			}, len(pending), topTierSize, loadSkew, nil
+		}
+		// 当前组所有账号均不可调度（freshCheck 或 dbRecheck 失败）→ 降级到下一优先级组
 	}
 
-	return nil, len(candidates), topK, loadSkew, ErrNoAvailableAccounts
+	return nil, len(pending), topTierSize, loadSkew, ErrNoAvailableAccounts
 }
 
 func (s *defaultOpenAIAccountScheduler) isAccountTransportCompatible(account *Account, requiredTransport OpenAIUpstreamTransport) bool {
@@ -884,40 +777,6 @@ func (s *OpenAIGatewayService) openAIWSSessionStickyTTL() time.Duration {
 		return time.Duration(s.cfg.Gateway.OpenAIWS.StickySessionTTLSeconds) * time.Second
 	}
 	return openaiStickySessionTTL
-}
-
-func (s *OpenAIGatewayService) openAIWSLBTopK() int {
-	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIWS.LBTopK > 0 {
-		return s.cfg.Gateway.OpenAIWS.LBTopK
-	}
-	return 7
-}
-
-func (s *OpenAIGatewayService) openAIWSSchedulerWeights() GatewayOpenAIWSSchedulerScoreWeightsView {
-	if s != nil && s.cfg != nil {
-		return GatewayOpenAIWSSchedulerScoreWeightsView{
-			Priority:  s.cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Priority,
-			Load:      s.cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Load,
-			Queue:     s.cfg.Gateway.OpenAIWS.SchedulerScoreWeights.Queue,
-			ErrorRate: s.cfg.Gateway.OpenAIWS.SchedulerScoreWeights.ErrorRate,
-			TTFT:      s.cfg.Gateway.OpenAIWS.SchedulerScoreWeights.TTFT,
-		}
-	}
-	return GatewayOpenAIWSSchedulerScoreWeightsView{
-		Priority:  1.0,
-		Load:      1.0,
-		Queue:     0.7,
-		ErrorRate: 0.8,
-		TTFT:      0.5,
-	}
-}
-
-type GatewayOpenAIWSSchedulerScoreWeightsView struct {
-	Priority  float64
-	Load      float64
-	Queue     float64
-	ErrorRate float64
-	TTFT      float64
 }
 
 func clamp01(value float64) float64 {
