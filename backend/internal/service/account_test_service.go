@@ -1290,15 +1290,10 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 		return s.sendErrorAndEnd(c, "Unsupported challenge: arkose required")
 	}
 
-	// Initialize and prepare conversation
+	// 作者: mkx  变更: 2026/04/23 - 切回老端点 /backend-api/conversation，删除 init/prepare/conduit 三步
 	s.sendEvent(c, TestEvent{Type: "content", Text: "Preparing image conversation...\n"})
 	parentMessageID := uuid.NewString()
 	proofToken := generateOpenAIProofToken(chatReqs.ProofOfWork.Required, chatReqs.ProofOfWork.Seed, chatReqs.ProofOfWork.Difficulty, headers.Get("User-Agent"))
-	_ = initializeOpenAIImageConversation(ctx, client, headers)
-	conduitToken, err := prepareOpenAIImageConversation(ctx, client, headers, prompt, parentMessageID, chatReqs.Token, proofToken)
-	if err != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Conversation prepare failed: %s", err.Error()))
-	}
 
 	// Build simplified conversation request (no file uploads)
 	convReq := buildOpenAIImageTestConversationRequest(prompt, parentMessageID)
@@ -1306,9 +1301,6 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	convHeaders.Set("Accept", "text/event-stream")
 	convHeaders.Set("Content-Type", "application/json")
 	convHeaders.Set("openai-sentinel-chat-requirements-token", chatReqs.Token)
-	if conduitToken != "" {
-		convHeaders.Set("x-conduit-token", conduitToken)
-	}
 	if proofToken != "" {
 		convHeaders.Set("openai-sentinel-proof-token", proofToken)
 	}
@@ -1333,8 +1325,17 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Conversation API returned %d", resp.StatusCode))
 	}
 
+	// 作者: mkx  变更: 2026/04/23 - 临时调试：把整个 SSE 流读进 buffer，解析完没图时 dump 出来看看
+	// 上游到底回了什么（非流错误、rate limit 提示、text-only 响应等）
+	streamBytes, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		return s.sendErrorAndEnd(c, fmt.Sprintf("Stream read failed: %s", readErr.Error()))
+	}
+	dumpResp := *resp
+	dumpResp.Body = io.NopCloser(bytes.NewReader(streamBytes))
+
 	startTime := time.Now()
-	conversationID, pointerInfos, _, _, err := readOpenAIImageConversationStream(resp, startTime)
+	conversationID, pointerInfos, _, _, err := readOpenAIImageConversationStream(&dumpResp, startTime)
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Stream read failed: %s", err.Error()))
 	}
@@ -1342,7 +1343,7 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	pointerInfos = mergeOpenAIImagePointerInfos(pointerInfos, nil)
 	if conversationID != "" && !hasOpenAIFileServicePointerInfos(pointerInfos) {
 		s.sendEvent(c, TestEvent{Type: "content", Text: "Waiting for image generation to complete...\n"})
-		polledPointers, pollErr := pollOpenAIImageConversation(ctx, client, headers, conversationID)
+		polledPointers, pollErr := pollOpenAIImageConversation(ctx, client, headers, conversationID, nil)
 		if pollErr != nil {
 			return s.sendErrorAndEnd(c, fmt.Sprintf("Poll failed: %s", pollErr.Error()))
 		}
@@ -1350,6 +1351,15 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	}
 	pointerInfos = preferOpenAIFileServicePointerInfos(pointerInfos)
 	if len(pointerInfos) == 0 {
+		// 作者: mkx  变更: 2026/04/23 - 临时调试：打印原始 SSE 流的前 4KB 和长度
+		preview := streamBytes
+		if len(preview) > 4096 {
+			preview = preview[:4096]
+		}
+		log.Printf(
+			"conversation stream without images: account=%d status=%d conv_id=%q total_bytes=%d stream_prefix=%q",
+			account.ID, resp.StatusCode, conversationID, len(streamBytes), string(preview),
+		)
 		return s.sendErrorAndEnd(c, "No images returned from conversation")
 	}
 
@@ -1414,21 +1424,26 @@ func buildOpenAIBackendAPIHeadersForTest(ctx context.Context, account *Account, 
 	headers := make(http.Header)
 	headers.Set("Authorization", "Bearer "+token)
 	headers.Set("Accept", "application/json")
+	headers.Set("Accept-Language", openAIImageAcceptLanguage)
 	headers.Set("Origin", "https://chatgpt.com")
 	headers.Set("Referer", "https://chatgpt.com/")
 	headers.Set("Sec-Fetch-Dest", "empty")
 	headers.Set("Sec-Fetch-Mode", "cors")
 	headers.Set("Sec-Fetch-Site", "same-origin")
 	headers.Set("User-Agent", openAIImageBackendUserAgent)
+	// 作者: mkx  变更: 2026/04/23 - 补齐 ChatGPT 后端校验的客户端标识
+	headers.Set("oai-language", openAIImageLanguage)
+	headers.Set("oai-client-build-number", openAIImageClientBuildNumber)
+	headers.Set("oai-client-version", openAIImageClientVersion)
 	if customUA := strings.TrimSpace(account.GetOpenAIUserAgent()); customUA != "" {
 		headers.Set("User-Agent", customUA)
 	}
 	if chatgptAccountID := strings.TrimSpace(account.GetChatGPTAccountID()); chatgptAccountID != "" {
 		headers.Set("chatgpt-account-id", chatgptAccountID)
 	}
+	// 注意: 不要手动设置 Cookie 头，避免覆盖 req.Client cookie jar
 	if deviceID != "" {
 		headers.Set("oai-device-id", deviceID)
-		headers.Set("Cookie", "oai-did="+deviceID)
 	}
 	if sessionID != "" {
 		headers.Set("oai-session-id", sessionID)
@@ -1437,19 +1452,14 @@ func buildOpenAIBackendAPIHeadersForTest(ctx context.Context, account *Account, 
 }
 
 // buildOpenAIImageTestConversationRequest creates a simplified image generation conversation request.
+// 作者: mkx  变更: 2026/04/23 - 对齐老端点 /backend-api/conversation 的 payload 字段
 func buildOpenAIImageTestConversationRequest(prompt, parentMessageID string) map[string]any {
 	promptText := strings.TrimSpace(prompt)
 	if promptText == "" {
 		promptText = "Generate an image."
 	}
 	metadata := map[string]any{
-		"developer_mode_connector_ids": []any{},
-		"selected_github_repos":        []any{},
-		"selected_all_github_repos":    false,
-		"system_hints":                 []string{"picture_v2"},
-		"serialization_metadata": map[string]any{
-			"custom_symbol_offsets": []any{},
-		},
+		"attachments": []map[string]any{},
 	}
 	message := map[string]any{
 		"id":     uuid.NewString(),
@@ -1458,27 +1468,39 @@ func buildOpenAIImageTestConversationRequest(prompt, parentMessageID string) map
 			"content_type": "text",
 			"parts":        []any{promptText},
 		},
-		"metadata":    metadata,
-		"create_time": float64(time.Now().UnixMilli()) / 1000,
+		"metadata": metadata,
 	}
 	return map[string]any{
-		"action":                   "next",
-		"client_prepare_state":     "sent",
-		"parent_message_id":        parentMessageID,
-		"messages":                 []any{message},
-		"model":                    "auto",
-		"timezone_offset_min":      openAITimezoneOffsetMinutes(),
-		"timezone":                 openAITimezoneName(),
-		"conversation_mode":        map[string]any{"kind": "primary_assistant"},
-		"system_hints":             []string{"picture_v2"},
-		"supports_buffering":       true,
-		"supported_encodings":      []string{"v1"},
-		"client_contextual_info":   map[string]any{"app_name": "chatgpt.com"},
-		"force_nulligen":           false,
-		"force_paragen":            false,
-		"force_paragen_model_slug": "",
-		"force_rate_limit":         false,
-		"websocket_request_id":     uuid.NewString(),
+		"action":                               "next",
+		"messages":                             []any{message},
+		"parent_message_id":                    parentMessageID,
+		"model":                                "auto",
+		"history_and_training_disabled":        false,
+		"timezone_offset_min":                  openAIImageTimezoneOffsetMin,
+		"timezone":                             openAIImageTimezone,
+		"conversation_mode":                    map[string]any{"kind": "primary_assistant"},
+		"conversation_origin":                  nil,
+		"force_paragen":                        false,
+		"force_paragen_model_slug":             "",
+		"force_rate_limit":                     false,
+		"force_use_sse":                        true,
+		"paragen_cot_summary_display_override": "allow",
+		"paragen_stream_type_override":         nil,
+		"reset_rate_limits":                    false,
+		"suggestions":                          []any{},
+		"supported_encodings":                  []any{},
+		"system_hints":                         []string{"picture_v2"},
+		"variant_purpose":                      "comparison_implicit",
+		"websocket_request_id":                 uuid.NewString(),
+		"client_contextual_info": map[string]any{
+			"is_dark_mode":      false,
+			"time_since_loaded": 200,
+			"page_height":       900,
+			"page_width":        1440,
+			"pixel_ratio":       1.2,
+			"screen_height":     1080,
+			"screen_width":      1920,
+		},
 	}
 }
 

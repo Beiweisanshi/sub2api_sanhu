@@ -11,14 +11,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
+	"math/rand/v2"
 	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/textproto"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -38,15 +45,25 @@ const (
 	openAIImagesGenerationsURL = "https://api.openai.com/v1/images/generations"
 	openAIImagesEditsURL       = "https://api.openai.com/v1/images/edits"
 
-	openAIChatGPTStartURL               = "https://chatgpt.com/"
-	openAIChatGPTFilesURL               = "https://chatgpt.com/backend-api/files"
-	openAIChatGPTConversationInitURL    = "https://chatgpt.com/backend-api/conversation/init"
-	openAIChatGPTConversationURL        = "https://chatgpt.com/backend-api/f/conversation"
-	openAIChatGPTConversationPrepareURL = "https://chatgpt.com/backend-api/f/conversation/prepare"
-	openAIChatGPTChatRequirementsURL    = "https://chatgpt.com/backend-api/sentinel/chat-requirements"
+	openAIChatGPTStartURL             = "https://chatgpt.com/"
+	openAIChatGPTFilesURL             = "https://chatgpt.com/backend-api/files"
+	openAIChatGPTFilesProcessURL      = "https://chatgpt.com/backend-api/files/process_upload_stream"
+	openAIChatGPTConversationURL      = "https://chatgpt.com/backend-api/conversation"
+	openAIChatGPTChatRequirementsURL  = "https://chatgpt.com/backend-api/sentinel/chat-requirements"
+	openAIChatGPTSentinelSDKURL       = "https://chatgpt.com/backend-api/sentinel/sdk.js"
 
-	openAIImageBackendUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+	// 作者: mkx  变更: 2026/04/23 - UA 版本对齐 req/v3 的 ImpersonateChrome (Chrome 120)，
+	// 避免 JA3 指纹和 UA 版本号不自洽触发 Cloudflare 挑战
+	openAIImageBackendUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 	openAIImageRequirementsDiff = "0fffff"
+
+	// 作者: mkx  变更: 2026/04/23 - 对齐 chatgpt2api 的客户端标识，后端现在会校验
+	openAIImageClientBuildNumber = "5955942"
+	openAIImageClientVersion     = "prod-be885abbfcfe7b1f511e88b3003d9ee44757fbad"
+	openAIImageLanguage          = "zh-CN"
+	openAIImageAcceptLanguage    = "zh-CN,zh;q=0.9,en;q=0.8"
+	openAIImageTimezone          = "America/Los_Angeles"
+	openAIImageTimezoneOffsetMin = -480
 )
 
 type OpenAIImagesCapability string
@@ -227,7 +244,7 @@ func parseOpenAIImagesMultipartRequest(body []byte, contentType string, req *Ope
 				req.HasMask = true
 			}
 			if name == "image" || strings.HasPrefix(name, "image[") {
-				width, height := parseOpenAIImageDimensions(part.Header)
+				width, height := parseOpenAIImageDimensions(data)
 				req.Uploads = append(req.Uploads, OpenAIImagesUpload{
 					FieldName:   name,
 					FileName:    fileName,
@@ -277,8 +294,19 @@ func parseOpenAIImagesMultipartRequest(body []byte, contentType string, req *Ope
 	return nil
 }
 
-func parseOpenAIImageDimensions(_ textproto.MIMEHeader) (int, int) {
-	return 0, 0
+// parseOpenAIImageDimensions 从图片字节流解析宽高，失败返回 (0,0)。
+// 对齐 chatgpt2api 的 _get_image_dimensions —— ChatGPT 的 picture_v2 路由
+// 会读 asset_pointer/attachments 里的 width/height，没有会走降级。
+// 作者: mkx  变更: 2026/04/23 - 替换空桩，改用 image.DecodeConfig 解 PNG/JPEG/GIF 头
+func parseOpenAIImageDimensions(data []byte) (int, int) {
+	if len(data) == 0 {
+		return 0, 0
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return 0, 0
+	}
+	return cfg.Width, cfg.Height
 }
 
 func applyOpenAIImagesDefaults(req *OpenAIImagesRequest) {
@@ -772,8 +800,11 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	if err != nil {
 		return nil, err
 	}
+	// 作者: mkx  变更: 2026/04/23 - bootstrap 只在冷启动/缓存过期且无法回退时才返回 error；
+	// 此时若继续请求会带着空/过期 oai-client-version 打 chat-requirements，上游稳定返回 500，必须中止
 	if bootstrapErr := bootstrapOpenAIBackendAPI(ctx, client, headers); bootstrapErr != nil {
 		logger.LegacyPrintf("service.openai_gateway", "OpenAI image bootstrap failed: %v", bootstrapErr)
+		return nil, s.wrapOpenAIImageBackendError(ctx, c, account, bootstrapErr)
 	}
 
 	chatReqs, err := fetchOpenAIChatRequirements(ctx, client, headers)
@@ -795,11 +826,6 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 
 	parentMessageID := uuid.NewString()
 	proofToken := generateOpenAIProofToken(chatReqs.ProofOfWork.Required, chatReqs.ProofOfWork.Seed, chatReqs.ProofOfWork.Difficulty, headers.Get("User-Agent"))
-	_ = initializeOpenAIImageConversation(ctx, client, headers)
-	conduitToken, err := prepareOpenAIImageConversation(ctx, client, headers, parsed.Prompt, parentMessageID, chatReqs.Token, proofToken)
-	if err != nil {
-		return nil, s.wrapOpenAIImageBackendError(ctx, c, account, err)
-	}
 
 	uploads, err := uploadOpenAIImageFiles(ctx, client, headers, parsed.Uploads)
 	if err != nil {
@@ -814,9 +840,6 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	convHeaders.Set("Accept", "text/event-stream")
 	convHeaders.Set("Content-Type", "application/json")
 	convHeaders.Set("openai-sentinel-chat-requirements-token", chatReqs.Token)
-	if conduitToken != "" {
-		convHeaders.Set("x-conduit-token", conduitToken)
-	}
 	if proofToken != "" {
 		convHeaders.Set("openai-sentinel-proof-token", proofToken)
 	}
@@ -843,13 +866,19 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	if err != nil {
 		return nil, err
 	}
-	pointerInfos = mergeOpenAIImagePointerInfos(pointerInfos, nil)
+	// 作者: mkx  变更: 2026/04/23 - edit 场景下需要过滤掉输入图片的 file_id，避免把原图当成输出
+	inputFileIDs := make(map[string]struct{}, len(uploads))
+	for _, u := range uploads {
+		inputFileIDs[u.FileID] = struct{}{}
+	}
+	pointerInfos = filterOpenAIInputPointerInfos(pointerInfos, inputFileIDs)
 	if conversationID != "" && !hasOpenAIFileServicePointerInfos(pointerInfos) {
-		polledPointers, pollErr := pollOpenAIImageConversation(ctx, client, headers, conversationID)
+		// 作者: mkx  变更: 2026/04/23 - 轮询内部感知输入图，避免预览窗口提前返回"只有输入图"而被外层误判为失败
+		polledPointers, pollErr := pollOpenAIImageConversation(ctx, client, headers, conversationID, inputFileIDs)
 		if pollErr != nil {
 			return nil, s.wrapOpenAIImageBackendError(ctx, c, account, pollErr)
 		}
-		pointerInfos = mergeOpenAIImagePointerInfos(pointerInfos, polledPointers)
+		pointerInfos = mergeOpenAIImagePointerInfos(pointerInfos, filterOpenAIInputPointerInfos(polledPointers, inputFileIDs))
 	}
 	pointerInfos = preferOpenAIFileServicePointerInfos(pointerInfos)
 	if len(pointerInfos) == 0 {
@@ -901,21 +930,27 @@ func (s *OpenAIGatewayService) buildOpenAIBackendAPIHeaders(account *Account, to
 	headers := make(http.Header)
 	headers.Set("Authorization", "Bearer "+token)
 	headers.Set("Accept", "application/json")
+	headers.Set("Accept-Language", openAIImageAcceptLanguage)
 	headers.Set("Origin", "https://chatgpt.com")
 	headers.Set("Referer", "https://chatgpt.com/")
 	headers.Set("Sec-Fetch-Dest", "empty")
 	headers.Set("Sec-Fetch-Mode", "cors")
 	headers.Set("Sec-Fetch-Site", "same-origin")
 	headers.Set("User-Agent", openAIImageBackendUserAgent)
+	// 作者: mkx  变更: 2026/04/23 - ChatGPT 后端现在校验这三个客户端标识，缺失会 403
+	headers.Set("oai-language", openAIImageLanguage)
+	headers.Set("oai-client-build-number", openAIImageClientBuildNumber)
+	headers.Set("oai-client-version", openAIImageClientVersion)
 	if customUA := strings.TrimSpace(account.GetOpenAIUserAgent()); customUA != "" {
 		headers.Set("User-Agent", customUA)
 	}
 	if chatgptAccountID := strings.TrimSpace(account.GetChatGPTAccountID()); chatgptAccountID != "" {
 		headers.Set("chatgpt-account-id", chatgptAccountID)
 	}
+	// 注意: 不要手动 headers.Set("Cookie", ...)，否则会覆盖 req.Client 的 cookie jar，
+	// 导致 Cloudflare 的 __cf_bm/_cfuvid 和 OpenAI 的 oai-did/oai-nav-state 丢失。
 	if deviceID != "" {
 		headers.Set("oai-device-id", deviceID)
-		headers.Set("Cookie", "oai-did="+deviceID)
 	}
 	if sessionID != "" {
 		headers.Set("oai-session-id", sessionID)
@@ -960,6 +995,121 @@ func (s *OpenAIGatewayService) ensureOpenAIImageSessionCredentials(ctx context.C
 	return deviceID, sessionID
 }
 
+// chatGPTClientFingerprint 保存从 ChatGPT 首页 HTML 解析出的客户端指纹，
+// 供 PoW config 和 oai-client-* 请求头使用。
+// 作者: mkx  变更: 2026/04/23 - ChatGPT 前端已改版，dpl 来自 <html data-build="prod-xxx">，
+// client build number 来自 data-seq；不再依赖老的 `c/<hash>/_` script 路径段
+type chatGPTClientFingerprint struct {
+	dpl               string   // 对应 data-build，同时也是 oai-client-version
+	scripts           []string // 兼容老版本：仅当 HTML 里还出现 `c/<hash>/_` 形式时才非空
+	clientBuildNumber string   // 对应 data-seq，用作 oai-client-build-number
+}
+
+// chatGPTDPLCache 缓存从首页 HTML 解析出的客户端指纹，供 PoW 生成和请求头覆盖使用。
+var (
+	chatGPTDPLCache struct {
+		sync.RWMutex
+		fp        chatGPTClientFingerprint
+		updatedAt time.Time
+	}
+	chatGPTScriptRe    = regexp.MustCompile(`c/[^/]*/_`)
+	chatGPTDataBuildRe = regexp.MustCompile(`<html[^>]*data-build="([^"]+)"`)
+	chatGPTDataSeqRe   = regexp.MustCompile(`<html[^>]*data-seq="([^"]+)"`)
+	chatGPTScriptSrcRe = regexp.MustCompile(`<script[^>]+src="([^"]+)"`)
+)
+
+const chatGPTDPLTTL = 15 * time.Minute
+
+// parseChatGPTDPLFromHTML 解析 ChatGPT 首页 HTML，提取指纹用于 PoW 和客户端标识。
+// 优先扫 <html data-build="..."> / data-seq="..." 两个属性（当前主站在用）；
+// 若 HTML 里还残留老的 `c/<hash>/_` script 段（历史兼容），也会顺便收集。
+func parseChatGPTDPLFromHTML(html string) chatGPTClientFingerprint {
+	var fp chatGPTClientFingerprint
+	if html == "" {
+		return fp
+	}
+
+	// 作者: mkx  变更: 2026/04/23 - 老格式兼容：扫 `c/<hash>/_` 段，匹配到才会有 scripts
+	matchedScripts := make([]string, 0, 4)
+	legacyDPL := ""
+	for _, match := range chatGPTScriptSrcRe.FindAllStringSubmatch(html, -1) {
+		if len(match) < 2 {
+			continue
+		}
+		src := strings.TrimSpace(match[1])
+		if src == "" {
+			continue
+		}
+		segment := chatGPTScriptRe.FindString(src)
+		if segment == "" {
+			continue
+		}
+		if legacyDPL == "" {
+			legacyDPL = segment
+		}
+		if segment == legacyDPL {
+			matchedScripts = append(matchedScripts, src)
+		}
+	}
+	fp.scripts = matchedScripts
+
+	// 作者: mkx  变更: 2026/04/23 - 新版 ChatGPT：data-build 就是 dpl (`prod-<hash>` 形式)
+	if m := chatGPTDataBuildRe.FindStringSubmatch(html); len(m) >= 2 {
+		fp.dpl = strings.TrimSpace(m[1])
+	}
+	// 老格式下 data-build 可能缺失，退回用 script 段里的 `c/<hash>/_`
+	if fp.dpl == "" {
+		fp.dpl = legacyDPL
+	}
+
+	if m := chatGPTDataSeqRe.FindStringSubmatch(html); len(m) >= 2 {
+		fp.clientBuildNumber = strings.TrimSpace(m[1])
+	}
+
+	return fp
+}
+
+func getCachedChatGPTFingerprint() (chatGPTClientFingerprint, bool) {
+	chatGPTDPLCache.RLock()
+	defer chatGPTDPLCache.RUnlock()
+	if chatGPTDPLCache.fp.dpl == "" || time.Since(chatGPTDPLCache.updatedAt) > chatGPTDPLTTL {
+		return chatGPTClientFingerprint{}, false
+	}
+	scriptsCopy := make([]string, len(chatGPTDPLCache.fp.scripts))
+	copy(scriptsCopy, chatGPTDPLCache.fp.scripts)
+	return chatGPTClientFingerprint{
+		dpl:               chatGPTDPLCache.fp.dpl,
+		scripts:           scriptsCopy,
+		clientBuildNumber: chatGPTDPLCache.fp.clientBuildNumber,
+	}, true
+}
+
+func storeChatGPTFingerprint(fp chatGPTClientFingerprint) {
+	chatGPTDPLCache.Lock()
+	defer chatGPTDPLCache.Unlock()
+	chatGPTDPLCache.fp = fp
+	chatGPTDPLCache.updatedAt = time.Now()
+}
+
+// applyChatGPTFingerprintToHeaders 用缓存里解析出的真实 client-version / build-number
+// 覆盖请求头里硬编码的过期值。必须在 bootstrap 成功解析后调用，否则会拿着旧指纹打 chat-requirements，
+// 上游会返回 500（签名/指纹校验失败）。
+// 作者: mkx  变更: 2026/04/23
+func applyChatGPTFingerprintToHeaders(headers http.Header) {
+	fp, ok := getCachedChatGPTFingerprint()
+	if !ok {
+		return
+	}
+	if fp.dpl != "" {
+		headers.Set("oai-client-version", fp.dpl)
+	}
+	if fp.clientBuildNumber != "" {
+		headers.Set("oai-client-build-number", fp.clientBuildNumber)
+	}
+}
+
+// bootstrapOpenAIBackendAPI 获取 ChatGPT 首页，触发 cookie jar 下发，并在缓存过期时解析出 dpl/script。
+// 作者: mkx  变更: 2026/04/23 - 只有 2xx + 解析出非空 dpl 才写缓存，避免 CF 挑战页污染指纹
 func bootstrapOpenAIBackendAPI(ctx context.Context, client *req.Client, headers http.Header) error {
 	resp, err := client.R().
 		SetContext(ctx).
@@ -969,32 +1119,60 @@ func bootstrapOpenAIBackendAPI(ctx context.Context, client *req.Client, headers 
 	if err != nil {
 		return err
 	}
-	if resp != nil && resp.Body != nil {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
+	defer func() {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	if resp == nil || resp.Body == nil {
+		return nil
 	}
-	return nil
-}
 
-func initializeOpenAIImageConversation(ctx context.Context, client *req.Client, headers http.Header) error {
-	payload := map[string]any{
-		"gizmo_id":                nil,
-		"requested_default_model": nil,
-		"conversation_id":         nil,
-		"timezone_offset_min":     openAITimezoneOffsetMinutes(),
-		"system_hints":            []string{"picture_v2"},
+	_, cacheValid := getCachedChatGPTFingerprint()
+	if cacheValid && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
+		// 缓存有效且本次请求只是为了刷新 cookie jar，不强求 2xx
+		_, _ = io.Copy(io.Discard, resp.Body)
+		applyChatGPTFingerprintToHeaders(headers)
+		return nil
 	}
-	resp, err := client.R().
-		SetContext(ctx).
-		SetHeaders(headerToMap(headers)).
-		SetBodyJsonMarshal(payload).
-		Post(openAIChatGPTConversationInitURL)
-	if err != nil {
-		return err
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		if !cacheValid {
+			return fmt.Errorf("chatgpt bootstrap non-2xx: %d", resp.StatusCode)
+		}
+		applyChatGPTFingerprintToHeaders(headers)
+		return nil
 	}
-	if !resp.IsSuccessState() {
-		return newOpenAIImageStatusError(resp, "conversation init failed")
+	if cacheValid {
+		// 缓存新鲜，无需再解析 HTML
+		_, _ = io.Copy(io.Discard, resp.Body)
+		applyChatGPTFingerprintToHeaders(headers)
+		return nil
 	}
+
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if readErr != nil {
+		return readErr
+	}
+	fp := parseChatGPTDPLFromHTML(string(body))
+	if fp.dpl == "" {
+		// 作者: mkx  变更: 2026/04/23 - 解析失败时 dump 响应前缀帮助排查（CF 挑战页 / 新版骨架页等）
+		prefix := body
+		if len(prefix) > 1024 {
+			prefix = prefix[:1024]
+		}
+		logger.LegacyPrintf(
+			"service.openai_gateway",
+			"chatgpt bootstrap parse empty dpl: status=%d content_type=%q body_len=%d body_prefix=%q",
+			resp.StatusCode,
+			resp.Header.Get("Content-Type"),
+			len(body),
+			string(prefix),
+		)
+		return fmt.Errorf("chatgpt bootstrap parsed empty dpl")
+	}
+	storeChatGPTFingerprint(fp)
+	applyChatGPTFingerprintToHeaders(headers)
 	return nil
 }
 
@@ -1014,92 +1192,50 @@ type openAIChatRequirements struct {
 }
 
 func fetchOpenAIChatRequirements(ctx context.Context, client *req.Client, headers http.Header) (*openAIChatRequirements, error) {
-	var lastErr error
-	for _, payload := range []map[string]any{
-		{"p": nil},
-		{"p": generateOpenAIRequirementsToken(headers.Get("User-Agent"))},
-	} {
-		var result openAIChatRequirements
-		resp, err := client.R().
-			SetContext(ctx).
-			SetHeaders(headerToMap(headers)).
-			SetBodyJsonMarshal(payload).
-			SetSuccessResult(&result).
-			Post(openAIChatGPTChatRequirementsURL)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		if resp.IsSuccessState() && strings.TrimSpace(result.Token) != "" {
-			return &result, nil
-		}
-		lastErr = newOpenAIImageStatusError(resp, "chat-requirements failed")
-	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("chat-requirements failed")
-	}
-	return nil, lastErr
-}
-
-func prepareOpenAIImageConversation(
-	ctx context.Context,
-	client *req.Client,
-	headers http.Header,
-	prompt string,
-	parentMessageID string,
-	chatToken string,
-	proofToken string,
-) (string, error) {
-	messageID := uuid.NewString()
+	// 作者: mkx  变更: 2026/04/23 - 对齐 chatgpt2api，一次带 token，不再先发 {"p": nil}
 	payload := map[string]any{
-		"action":                "next",
-		"client_prepare_state":  "success",
-		"fork_from_shared_post": false,
-		"parent_message_id":     parentMessageID,
-		"model":                 "auto",
-		"timezone_offset_min":   openAITimezoneOffsetMinutes(),
-		"timezone":              openAITimezoneName(),
-		"conversation_mode":     map[string]any{"kind": "primary_assistant"},
-		"system_hints":          []string{"picture_v2"},
-		"supports_buffering":    true,
-		"supported_encodings":   []string{"v1"},
-		"partial_query": map[string]any{
-			"id":     messageID,
-			"author": map[string]any{"role": "user"},
-			"content": map[string]any{
-				"content_type": "text",
-				"parts":        []string{coalesceOpenAIFileName(prompt, "Generate an image.")},
-			},
-		},
-		"client_contextual_info": map[string]any{
-			"app_name": "chatgpt.com",
-		},
+		"p": generateOpenAIRequirementsToken(headers.Get("User-Agent")),
 	}
-	prepareHeaders := cloneHTTPHeader(headers)
-	prepareHeaders.Set("Accept", "*/*")
-	prepareHeaders.Set("Content-Type", "application/json")
-	if strings.TrimSpace(chatToken) != "" {
-		prepareHeaders.Set("openai-sentinel-chat-requirements-token", strings.TrimSpace(chatToken))
-	}
-	if strings.TrimSpace(proofToken) != "" {
-		prepareHeaders.Set("openai-sentinel-proof-token", strings.TrimSpace(proofToken))
-	}
-	var result struct {
-		ConduitToken string `json:"conduit_token"`
-	}
+	var result openAIChatRequirements
 	resp, err := client.R().
 		SetContext(ctx).
-		SetHeaders(headerToMap(prepareHeaders)).
+		SetHeaders(headerToMap(headers)).
 		SetBodyJsonMarshal(payload).
 		SetSuccessResult(&result).
-		Post(openAIChatGPTConversationPrepareURL)
+		Post(openAIChatGPTChatRequirementsURL)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if !resp.IsSuccessState() {
-		return "", newOpenAIImageStatusError(resp, "conversation prepare failed")
+		// 作者: mkx  变更: 2026/04/23 - 临时调试日志：chat-requirements 失败时 dump 上游响应细节
+		statusErr := newOpenAIImageStatusError(resp, "chat-requirements failed")
+		if se, ok := statusErr.(*openAIImageStatusError); ok {
+			bodyPreview := se.ResponseBody
+			if len(bodyPreview) > 1024 {
+				bodyPreview = bodyPreview[:1024]
+			}
+			fp, _ := getCachedChatGPTFingerprint()
+			logger.LegacyPrintf(
+				"service.openai_gateway",
+				"chat-requirements upstream error: status=%d request_id=%q cf_ray=%q content_type=%q body=%q cached_dpl=%q cached_seq=%q payload_len=%d has_sentinel_proof=%t has_account_id=%t",
+				se.StatusCode,
+				se.RequestID,
+				se.ResponseHeaders.Get("cf-ray"),
+				se.ResponseHeaders.Get("Content-Type"),
+				string(bodyPreview),
+				fp.dpl,
+				fp.clientBuildNumber,
+				len(fmt.Sprint(payload["p"])),
+				headers.Get("openai-sentinel-proof-token") != "",
+				headers.Get("chatgpt-account-id") != "",
+			)
+		}
+		return nil, statusErr
 	}
-	return strings.TrimSpace(result.ConduitToken), nil
+	if strings.TrimSpace(result.Token) == "" {
+		return nil, fmt.Errorf("chat-requirements returned empty token")
+	}
+	return &result, nil
 }
 
 type openAIUploadedImage struct {
@@ -1119,10 +1255,13 @@ func uploadOpenAIImageFiles(ctx context.Context, client *req.Client, headers htt
 	for i := range uploads {
 		item := uploads[i]
 		fileName := coalesceOpenAIFileName(item.FileName, "image.png")
+		// 作者: mkx  变更: 2026/04/23 - 对齐 chatgpt2api，补齐 timezone/reset_rate_limits 字段
 		payload := map[string]any{
-			"file_name": fileName,
-			"file_size": len(item.Data),
-			"use_case":  "multimodal",
+			"file_name":           fileName,
+			"file_size":           len(item.Data),
+			"use_case":            "multimodal",
+			"timezone_offset_min": openAIImageTimezoneOffsetMin,
+			"reset_rate_limits":   false,
 		}
 		var created struct {
 			FileID    string `json:"file_id"`
@@ -1165,11 +1304,19 @@ func uploadOpenAIImageFiles(ctx context.Context, client *req.Client, headers htt
 			return nil, newOpenAIImageStatusError(putResp, "upload image bytes failed")
 		}
 
+		// 作者: mkx  变更: 2026/04/23 - multimodal 用例必须走 process_upload_stream，
+		// 老的 /files/{id}/uploaded 端点在当前后端对 multimodal 已失效
+		processPayload := map[string]any{
+			"file_id":             created.FileID,
+			"use_case":            "multimodal",
+			"index_for_retrieval": false,
+			"file_name":           fileName,
+		}
 		uploadedResp, err := client.R().
 			SetContext(ctx).
 			SetHeaders(headerToMap(headers)).
-			SetBodyJsonMarshal(map[string]any{}).
-			Post(fmt.Sprintf("%s/%s/uploaded", openAIChatGPTFilesURL, created.FileID))
+			SetBodyJsonMarshal(processPayload).
+			Post(openAIChatGPTFilesProcessURL)
 		if err != nil {
 			return nil, err
 		}
@@ -1197,12 +1344,20 @@ func coalesceOpenAIFileName(value string, fallback string) string {
 	return value
 }
 
+// 作者: mkx  变更: 2026/04/23 - 按 chatgpt2api 老端点 /backend-api/conversation 字段对齐
 func buildOpenAIImageConversationRequest(parsed *OpenAIImagesRequest, parentMessageID string, uploads []openAIUploadedImage) map[string]any {
-	parts := []any{coalesceOpenAIFileName(parsed.Prompt, "Generate an image.")}
+	prompt := coalesceOpenAIFileName(parsed.Prompt, "Generate an image.")
+	if len(uploads) > 0 {
+		prompt = coalesceOpenAIFileName(parsed.Prompt, "Edit this image.")
+	}
+
+	parts := []any{prompt}
 	attachments := make([]map[string]any, 0, len(uploads))
 	if len(uploads) > 0 {
 		parts = make([]any, 0, len(uploads)+1)
 		for _, upload := range uploads {
+			// 作者: mkx  变更: 2026/04/23 - /backend-api/files 返回的是 file_id，必须用 file-service:// 命名空间；
+			// sediment:// 是 conversation attachment id 的专用前缀（见 fetchOpenAIImageDownloadURL），两者不能混用
 			parts = append(parts, map[string]any{
 				"content_type":  "image_asset_pointer",
 				"asset_pointer": "file-service://" + upload.FileID,
@@ -1211,20 +1366,18 @@ func buildOpenAIImageConversationRequest(parsed *OpenAIImagesRequest, parentMess
 				"height":        upload.Height,
 			})
 			attachment := map[string]any{
-				"id":       upload.FileID,
-				"mimeType": upload.MimeType,
-				"name":     upload.FileName,
-				"size":     upload.FileSize,
-			}
-			if upload.Width > 0 {
-				attachment["width"] = upload.Width
-			}
-			if upload.Height > 0 {
-				attachment["height"] = upload.Height
+				"id":           upload.FileID,
+				"size":         upload.FileSize,
+				"name":         upload.FileName,
+				"mime_type":    upload.MimeType,
+				"width":        upload.Width,
+				"height":       upload.Height,
+				"source":       "local",
+				"is_big_paste": false,
 			}
 			attachments = append(attachments, attachment)
 		}
-		parts = append(parts, coalesceOpenAIFileName(parsed.Prompt, "Edit this image."))
+		parts = append(parts, prompt)
 	}
 
 	contentType := "text"
@@ -1232,13 +1385,7 @@ func buildOpenAIImageConversationRequest(parsed *OpenAIImagesRequest, parentMess
 		contentType = "multimodal_text"
 	}
 	metadata := map[string]any{
-		"developer_mode_connector_ids": []any{},
-		"selected_github_repos":        []any{},
-		"selected_all_github_repos":    false,
-		"system_hints":                 []string{"picture_v2"},
-		"serialization_metadata": map[string]any{
-			"custom_symbol_offsets": []any{},
-		},
+		"attachments": attachments,
 	}
 	message := map[string]any{
 		"id":     uuid.NewString(),
@@ -1247,38 +1394,40 @@ func buildOpenAIImageConversationRequest(parsed *OpenAIImagesRequest, parentMess
 			"content_type": contentType,
 			"parts":        parts,
 		},
-		"metadata":    metadata,
-		"create_time": float64(time.Now().UnixMilli()) / 1000,
-	}
-	if len(attachments) > 0 {
-		metadata["attachments"] = attachments
+		"metadata": metadata,
 	}
 
 	return map[string]any{
 		"action":                               "next",
-		"client_prepare_state":                 "sent",
+		"messages":                             []any{message},
 		"parent_message_id":                    parentMessageID,
 		"model":                                "auto",
-		"timezone_offset_min":                  openAITimezoneOffsetMinutes(),
-		"timezone":                             openAITimezoneName(),
+		"history_and_training_disabled":        false,
+		"timezone_offset_min":                  openAIImageTimezoneOffsetMin,
+		"timezone":                             openAIImageTimezone,
 		"conversation_mode":                    map[string]any{"kind": "primary_assistant"},
-		"enable_message_followups":             true,
-		"system_hints":                         []string{"picture_v2"},
-		"supports_buffering":                   true,
-		"supported_encodings":                  []string{"v1"},
+		"conversation_origin":                  nil,
+		"force_paragen":                        false,
+		"force_paragen_model_slug":             "",
+		"force_rate_limit":                     false,
+		"force_use_sse":                        true,
 		"paragen_cot_summary_display_override": "allow",
-		"force_parallel_switch":                "auto",
+		"paragen_stream_type_override":         nil,
+		"reset_rate_limits":                    false,
+		"suggestions":                          []any{},
+		"supported_encodings":                  []any{},
+		"system_hints":                         []string{"picture_v2"},
+		"variant_purpose":                      "comparison_implicit",
+		"websocket_request_id":                 uuid.NewString(),
 		"client_contextual_info": map[string]any{
 			"is_dark_mode":      false,
 			"time_since_loaded": 200,
 			"page_height":       900,
 			"page_width":        1440,
-			"pixel_ratio":       1,
+			"pixel_ratio":       1.2,
 			"screen_height":     1080,
 			"screen_width":      1920,
-			"app_name":          "chatgpt.com",
 		},
-		"messages": []any{message},
 	}
 }
 
@@ -1424,6 +1573,37 @@ func hasOpenAIFileServicePointerInfos(items []openAIImagePointerInfo) bool {
 	return false
 }
 
+// filterOpenAIInputPointerInfos 过滤掉 edit 请求中上传作为输入的图片 pointer，
+// 避免把用户原图当成输出图片返回。
+// 作者: mkx  变更: 2026/04/23 - 对齐 chatgpt2api 的 _filter_output_file_ids
+func filterOpenAIInputPointerInfos(items []openAIImagePointerInfo, inputFileIDs map[string]struct{}) []openAIImagePointerInfo {
+	if len(items) == 0 || len(inputFileIDs) == 0 {
+		return items
+	}
+	out := make([]openAIImagePointerInfo, 0, len(items))
+	for _, item := range items {
+		id := canonicalOpenAIPointerID(item.Pointer)
+		if id != "" {
+			if _, ok := inputFileIDs[id]; ok {
+				continue
+			}
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func canonicalOpenAIPointerID(pointer string) string {
+	switch {
+	case strings.HasPrefix(pointer, "file-service://"):
+		return strings.TrimPrefix(pointer, "file-service://")
+	case strings.HasPrefix(pointer, "sediment://"):
+		return strings.TrimPrefix(pointer, "sediment://")
+	default:
+		return ""
+	}
+}
+
 func preferOpenAIFileServicePointerInfos(items []openAIImagePointerInfo) []openAIImagePointerInfo {
 	if !hasOpenAIFileServicePointerInfos(items) {
 		return items
@@ -1507,7 +1687,9 @@ func extractOpenAIImageToolMessages(mapping map[string]any) []openAIImageToolMes
 	return out
 }
 
-func pollOpenAIImageConversation(ctx context.Context, client *req.Client, headers http.Header, conversationID string) ([]openAIImagePointerInfo, error) {
+// 作者: mkx  变更: 2026/04/23 - 新增 inputFileIDs 入参：在轮询内部过滤输入图 pointer，
+// 避免 edit 慢请求在 preview 窗口内仅看到输入图时被误判为"已完成"
+func pollOpenAIImageConversation(ctx context.Context, client *req.Client, headers http.Header, conversationID string, inputFileIDs map[string]struct{}) ([]openAIImagePointerInfo, error) {
 	conversationID = strings.TrimSpace(conversationID)
 	if conversationID == "" {
 		return nil, nil
@@ -1548,11 +1730,14 @@ func pollOpenAIImageConversation(ctx context.Context, client *req.Client, header
 						}
 					}
 				}
-				if hasOpenAIFileServicePointerInfos(pointers) {
-					return preferOpenAIFileServicePointerInfos(pointers), nil
+				// 作者: mkx  变更: 2026/04/23 - 过滤输入图后再判定是否已产出输出，否则 edit 请求
+				// 会在预览窗口内把原图 pointer 当成结果直接返回
+				outputs := filterOpenAIInputPointerInfos(pointers, inputFileIDs)
+				if hasOpenAIFileServicePointerInfos(outputs) {
+					return preferOpenAIFileServicePointerInfos(outputs), nil
 				}
-				if len(pointers) > 0 && !firstToolAt.IsZero() && time.Since(firstToolAt) >= previewWait {
-					return pointers, nil
+				if len(outputs) > 0 && !firstToolAt.IsZero() && time.Since(firstToolAt) >= previewWait {
+					return outputs, nil
 				}
 			} else {
 				statusErr := newOpenAIImageStatusError(resp, "conversation poll failed")
@@ -1892,37 +2077,67 @@ func headerToMap(header http.Header) map[string]string {
 	return result
 }
 
-func openAITimezoneOffsetMinutes() int {
-	_, offset := time.Now().Zone()
-	return offset / 60
+// openAIPowParseTime 返回 chat2api proofofWork.py get_parse_time() 等价格式：
+//
+//	now(EST).strftime("%a %b %d %Y %H:%M:%S") + " GMT-0500 (Eastern Standard Time)"
+//
+// 例：Thu Apr 23 2026 13:45:01 GMT-0500 (Eastern Standard Time)
+// 作者: mkx  变更: 2026/04/23
+var openAIPowESTZone = time.FixedZone("EST", -5*3600)
+
+func openAIPowParseTime() string {
+	return time.Now().In(openAIPowESTZone).Format("Mon Jan 02 2006 15:04:05") + " GMT-0500 (Eastern Standard Time)"
 }
 
-func openAITimezoneName() string {
-	return time.Now().Location().String()
+// openAIPowPerfCounterMS 模拟浏览器 performance.now()（单调毫秒）。
+var openAIPowProcessStart = time.Now()
+
+func openAIPowPerfCounterMS() float64 {
+	return float64(time.Since(openAIPowProcessStart).Microseconds()) / 1000.0
+}
+
+// buildOpenAIPowConfig 组装 chat2api get_config 等价的 18 字段 PoW config。
+// requirements token / proof token 都走同一结构，只是 seed+difficulty 不同。
+// 作者: mkx  变更: 2026/04/23
+func buildOpenAIPowConfig(userAgent string) []any {
+	fp, _ := getCachedChatGPTFingerprint()
+	scriptSrc := ""
+	if len(fp.scripts) > 0 {
+		scriptSrc = fp.scripts[rand.IntN(len(fp.scripts))]
+	}
+	if scriptSrc == "" {
+		scriptSrc = openAIChatGPTSentinelSDKURL
+	}
+	pick := func(xs []string) string { return xs[rand.IntN(len(xs))] }
+	perf := openAIPowPerfCounterMS()
+	nowMS := float64(time.Now().UnixMilli())
+	return []any{
+		openAIPowScreenSums[rand.IntN(len(openAIPowScreenSums))],                          // 1
+		openAIPowParseTime(),                                                              // 2
+		4294705152,                                                                        // 3
+		0,                                                                                 // 4
+		coalesceOpenAIFileName(strings.TrimSpace(userAgent), openAIImageBackendUserAgent), // 5
+		scriptSrc,                          // 6
+		fp.dpl,                             // 7
+		"en-US",                            // 8
+		"en-US,es-US,en,es",                // 9
+		0,                                  // 10
+		pick(openAIPowNavigatorKeys),       // 11
+		pick(openAIPowDocumentKeys),        // 12
+		pick(openAIPowWindowKeys),          // 13
+		perf,                               // 14
+		uuid.NewString(),                   // 15
+		"",                                 // 16
+		openAIPowCores[rand.IntN(len(openAIPowCores))], // 17
+		nowMS - perf,                       // 18
+	}
 }
 
 func generateOpenAIRequirementsToken(userAgent string) string {
-	config := []any{
-		"core" + strconv.Itoa(3008),
-		time.Now().UTC().Format(time.RFC1123),
-		nil,
-		0.123456,
-		coalesceOpenAIFileName(strings.TrimSpace(userAgent), openAIImageBackendUserAgent),
-		nil,
-		"prod-openai-images",
-		"en-US",
-		"en-US,en",
-		0,
-		"navigator.webdriver",
-		"location",
-		"document.body",
-		float64(time.Now().UnixMilli()) / 1000,
-		uuid.NewString(),
-		"",
-		8,
-		time.Now().Unix(),
-	}
-	answer, solved := generateOpenAIChallengeAnswer(strconv.FormatInt(time.Now().UnixNano(), 10), openAIImageRequirementsDiff, config)
+	// 作者: mkx  变更: 2026/04/23 - 对齐 chat2api get_requirements_token：固定 difficulty "0fffff"，seed=random()
+	config := buildOpenAIPowConfig(userAgent)
+	seed := strconv.FormatFloat(rand.Float64(), 'f', -1, 64)
+	answer, solved := generateOpenAIChallengeAnswer(seed, openAIImageRequirementsDiff, config)
 	if solved {
 		return "gAAAAAC" + answer
 	}
@@ -1930,70 +2145,50 @@ func generateOpenAIRequirementsToken(userAgent string) string {
 }
 
 func generateOpenAIChallengeAnswer(seed string, difficulty string, config []any) (string, bool) {
-	diffBytes, err := hex.DecodeString(difficulty)
-	if err != nil {
+	difficulty = strings.TrimSpace(difficulty)
+	if difficulty == "" {
 		return "", false
 	}
-	p1 := []byte(jsonCompactSlice(config[:3], true))
-	p2 := []byte(jsonCompactSlice(config[4:9], false))
-	p3 := []byte(jsonCompactSlice(config[10:], false))
+	// 作者: mkx  变更: 2026/04/23 - 对齐 chat2api 的 hash[:diff_len] <= target_diff 语义：
+	// Python 中 diff_len = len(diff_hex_str)，target_diff = bytes.fromhex(diff)（更短）；
+	// 短串 <= 长串当且仅当"长串前缀严格小于短串"。等价写法：把 hash 前 diff_len 个
+	// hex 字符与 difficulty 字符串做字典序严格比较。消除"短串 vs 长串"的特殊情况。
+	diffHexLen := len(difficulty)
+	hashHexNeed := (diffHexLen + 1) / 2
+	p1 := strings.TrimSuffix(mustJSON(config[:3]), "]") + ","
+	p2 := "," + strings.TrimSuffix(strings.TrimPrefix(mustJSON(config[4:9]), "["), "]") + ","
+	p3 := "," + strings.TrimPrefix(mustJSON(config[10:]), "[")
 	seedBytes := []byte(seed)
 
-	for i := 0; i < 100000; i++ {
-		payload := fmt.Sprintf("%s%d,%s,%d,%s", p1, i, p2, i>>1, p3)
+	for i := 0; i < 500000; i++ {
+		payload := p1 + strconv.Itoa(i) + p2 + strconv.Itoa(i>>1) + p3
 		encoded := base64.StdEncoding.EncodeToString([]byte(payload))
 		sum := sha3.Sum512(append(seedBytes, []byte(encoded)...))
-		if bytes.Compare(sum[:len(diffBytes)], diffBytes) <= 0 {
+		hashHex := hex.EncodeToString(sum[:hashHexNeed])
+		if hashHex[:diffHexLen] < difficulty {
 			return encoded, true
 		}
 	}
 	return "", false
 }
 
-func jsonCompactSlice(values []any, trimSuffixComma bool) string {
-	raw, _ := json.Marshal(values)
-	text := string(raw)
-	if trimSuffixComma {
-		return strings.TrimSuffix(text, "]")
-	}
-	return strings.TrimPrefix(text, "[")
+func mustJSON(v any) string {
+	raw, _ := json.Marshal(v)
+	return string(raw)
 }
 
 func generateOpenAIProofToken(required bool, seed string, difficulty string, userAgent string) string {
+	// 作者: mkx  变更: 2026/04/23 - 对齐 chat2api get_answer_token：使用 chat-requirements 返回的 seed+difficulty，
+	// 结合 PoW config 求解后返回 "gAAAAAB" + 答案。
 	if !required || strings.TrimSpace(seed) == "" || strings.TrimSpace(difficulty) == "" {
 		return ""
 	}
-	screen := 3008
-	if len(seed)%2 == 0 {
-		screen = 4010
+	config := buildOpenAIPowConfig(userAgent)
+	answer, solved := generateOpenAIChallengeAnswer(seed, difficulty, config)
+	if solved {
+		return "gAAAAAB" + answer
 	}
-	proofToken := []any{
-		screen,
-		time.Now().UTC().Format(time.RFC1123),
-		nil,
-		0,
-		coalesceOpenAIFileName(strings.TrimSpace(userAgent), openAIImageBackendUserAgent),
-		"https://chatgpt.com/",
-		"dpl=openai-images",
-		"en",
-		"en-US",
-		nil,
-		"plugins[object PluginArray]",
-		"_reactListening",
-		"alert",
-	}
-	diffLen := len(difficulty)
-	for i := 0; i < 100000; i++ {
-		proofToken[3] = i
-		raw, _ := json.Marshal(proofToken)
-		encoded := base64.StdEncoding.EncodeToString(raw)
-		sum := sha3.Sum512([]byte(seed + encoded))
-		if strings.Compare(hex.EncodeToString(sum[:])[:diffLen], difficulty) <= 0 {
-			return "gAAAAAB" + encoded
-		}
-	}
-	fallbackBase := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%q", seed)))
-	return "gAAAAABwQ8Lk5FbGpA2NcR9dShT6gYjU7VxZ4D" + fallbackBase
+	return ""
 }
 
 func dedupeStrings(values []string) []string {
