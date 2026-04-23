@@ -275,6 +275,43 @@ func TestNormalizeOpsErrorType(t *testing.T) {
 	}
 }
 
+func TestClassifyOpsIsBusinessLimited(t *testing.T) {
+	tests := []struct {
+		name    string
+		errType string
+		phase   string
+		code    string
+		status  int
+		message string
+		want    bool
+	}{
+		// code-based hits (middleware 路径：body 带 code 字段)
+		{"code INSUFFICIENT_BALANCE", "api_error", "request", "INSUFFICIENT_BALANCE", 403, "Insufficient account balance", true},
+		{"code USAGE_LIMIT_EXCEEDED", "api_error", "request", "USAGE_LIMIT_EXCEEDED", 429, "usage limit", true},
+		{"code SUBSCRIPTION_NOT_FOUND", "api_error", "request", "SUBSCRIPTION_NOT_FOUND", 403, "no sub", true},
+		{"code USER_INACTIVE", "api_error", "request", "USER_INACTIVE", 403, "inactive", true},
+
+		// mkx 2026-04-23: handler 路径 — body 仅含 error.type=billing_error/subscription_error，code 缺失
+		{"billing_error without code", "billing_error", "request", "", 403, "insufficient balance", true},
+		{"subscription_error without code", "subscription_error", "request", "", 403, "subscription invalid", true},
+
+		// phase-based hits
+		{"phase billing", "api_error", "billing", "", 403, "billing", true},
+		{"phase concurrency", "api_error", "concurrency", "", 429, "concurrency limit", true},
+
+		// non-business errors
+		{"upstream rate_limit", "rate_limit_error", "upstream", "", 429, "upstream rate limit hit", false},
+		{"plain upstream_error", "upstream_error", "upstream", "", 502, "bad gateway", false},
+		{"invalid_request_error", "invalid_request_error", "request", "", 400, "bad param", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyOpsIsBusinessLimited(tt.errType, tt.phase, tt.code, tt.status, tt.message)
+			require.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestSetOpsEndpointContext_SetsContextKeys(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	rec := httptest.NewRecorder()

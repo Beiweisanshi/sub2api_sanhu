@@ -1183,6 +1183,12 @@ func classifyOpsIsBusinessLimited(errType, phase, code string, status int, messa
 	case opsCodeInsufficientBalance, opsCodeUsageLimitExceeded, opsCodeSubscriptionNotFound, opsCodeSubscriptionInvalid, opsCodeUserInactive:
 		return true
 	}
+	// mkx 2026-04-23: billing_error / subscription_error 本身即"用户级业务限制"，
+	// handler 层通过 billingErrorDetails 写入的响应 body 不包含 code 字段，
+	// 仅靠 code/phase 会漏判；此处按 errType 兜底，保证 SLA 统计一致。
+	if errType == "billing_error" || errType == "subscription_error" {
+		return true
+	}
 	if phase == "billing" || phase == "concurrency" {
 		// SLA/错误率排除“用户级业务限制”
 		return true
