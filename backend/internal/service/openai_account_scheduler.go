@@ -36,15 +36,21 @@ type cachedOpenAIAdvancedSchedulerSetting struct {
 var openAIAdvancedSchedulerSettingCache atomic.Value // *cachedOpenAIAdvancedSchedulerSetting
 var openAIAdvancedSchedulerSettingSF singleflight.Group
 
+// 作者: mkx  变更: 2026/04/23 - 新增 PreferredImageCapability 字段
+// 用途: 把 capability 从"硬门槛"改造成"组内偏好"。RequiredImageCapability 仍
+// 作为候选池过滤下限（Basic 通过 OAuth+apikey 都可选）；PreferredImageCapability
+// 作为同优先级组内的排序偏好（支持该能力的账号优先，比如 apikey 在前、OAuth 降级兜底）。
+// 只有同组 apikey 全部 fresh/recheck 失败时，才在同组降级到 OAuth，而不是跨优先级找更低 priority 的 apikey。
 type OpenAIAccountScheduleRequest struct {
-	GroupID                 *int64
-	SessionHash             string
-	StickyAccountID         int64
-	PreviousResponseID      string
-	RequestedModel          string
-	RequiredTransport       OpenAIUpstreamTransport
-	RequiredImageCapability OpenAIImagesCapability
-	ExcludedIDs             map[int64]struct{}
+	GroupID                  *int64
+	SessionHash              string
+	StickyAccountID          int64
+	PreviousResponseID       string
+	RequestedModel           string
+	RequiredTransport        OpenAIUpstreamTransport
+	RequiredImageCapability  OpenAIImagesCapability
+	PreferredImageCapability OpenAIImagesCapability
+	ExcludedIDs              map[int64]struct{}
 }
 
 type OpenAIAccountScheduleDecision struct {
@@ -490,6 +496,39 @@ func buildOpenAIWeightedSelectionOrder(
 	return order
 }
 
+// buildOpenAISelectionOrderWithPreference
+// 作者: mkx  变更: 2026/04/23
+// 在同优先级组内，把 PreferredImageCapability 当作"二级排序键"：
+//   - 支持 preferred 的账号（如 apikey 支持 native）放到前面，组成 tier-A
+//   - 不支持 preferred 但满足 Required 的账号（如 oauth 只支持 basic）放到后面，组成 tier-B
+//
+// 每个 tier 内部仍使用权重随机；两个 tier 按 A→B 顺序拼接。
+// 当 req.PreferredImageCapability 为空或全组都支持/都不支持时，退化为单层权重随机。
+func buildOpenAISelectionOrderWithPreference(
+	candidates []openAIAccountCandidate,
+	req OpenAIAccountScheduleRequest,
+) []openAIAccountCandidate {
+	if len(candidates) <= 1 || req.PreferredImageCapability == "" {
+		return buildOpenAIWeightedSelectionOrder(candidates, req)
+	}
+
+	preferred := make([]openAIAccountCandidate, 0, len(candidates))
+	rest := make([]openAIAccountCandidate, 0, len(candidates))
+	for _, c := range candidates {
+		if c.account != nil && c.account.SupportsOpenAIImageCapability(req.PreferredImageCapability) {
+			preferred = append(preferred, c)
+		} else {
+			rest = append(rest, c)
+		}
+	}
+	if len(preferred) == 0 || len(rest) == 0 {
+		return buildOpenAIWeightedSelectionOrder(candidates, req)
+	}
+
+	order := buildOpenAIWeightedSelectionOrder(preferred, req)
+	return append(order, buildOpenAIWeightedSelectionOrder(rest, req)...)
+}
+
 func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	ctx context.Context,
 	req OpenAIAccountScheduleRequest,
@@ -604,9 +643,12 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	// 依次尝试各优先级组，组内按权重概率选择。
 	// 只有当前组所有账号均无法通过 freshCheck+dbRecheck 时，才降级到下一组。
 	// 只要有账号通过双重检查（即使并发槽已满），就在当前组返回 WaitPlan，不再降级。
+	// 作者: mkx  变更: 2026/04/23 - 组内按 PreferredImageCapability 分层
+	// 分层逻辑：若请求带了 preferred capability（如 native），把组内候选拆成
+	// [支持 preferred 的] + [仅支持 required 的] 两层，前者先试，后者作为组内降级。
 	cfg := s.service.schedulingConfig()
 	for _, group := range groups {
-		selectionOrder := buildOpenAIWeightedSelectionOrder(group.candidates, req)
+		selectionOrder := buildOpenAISelectionOrderWithPreference(group.candidates, req)
 
 		anyTrulySchedulable := false
 		var waitPlanCandidate *Account
@@ -798,9 +840,17 @@ func (s *OpenAIGatewayService) SelectAccountWithScheduler(
 	excludedIDs map[int64]struct{},
 	requiredTransport OpenAIUpstreamTransport,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, "")
+	return s.selectAccountWithScheduler(ctx, groupID, previousResponseID, sessionHash, requestedModel, excludedIDs, requiredTransport, "", "")
 }
 
+// SelectAccountWithSchedulerForImages
+// 作者: mkx  变更: 2026/04/23
+// 策略：priority 作为主排序键，capability 降为组内偏好。
+//   - 分类器判 native 的请求：下限放宽到 Basic（OAuth+apikey 都进候选池），同优先级组内 apikey 先试，
+//     apikey 全部 fresh/recheck 失败才在同组降级 OAuth（以 basic 能力承接，静默丢弃 quality/style 等原生参数）。
+//   - 分类器判 basic 的请求：Required=Basic，无偏好，按权重随机即可。
+//
+// 删除了原本的外层"native 全失败→全量 basic 重调度"兜底——priority 在新逻辑下是硬序，组内已经完成降级。
 func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
 	ctx context.Context,
 	groupID *int64,
@@ -809,15 +859,16 @@ func (s *OpenAIGatewayService) SelectAccountWithSchedulerForImages(
 	excludedIDs map[int64]struct{},
 	requiredCapability OpenAIImagesCapability,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
-	selection, decision, err := s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, requiredCapability)
-	if err == nil && selection != nil && selection.Account != nil {
-		return selection, decision, nil
-	}
-	// 如果要求 native 能力（如指定了模型）但没有可用的 APIKey 账号，回退到 basic（OAuth 账号）
+	// 图片生成请求不使用跨请求粘性会话，避免同 prompt/body 长时间固定到同一账号。
+	// 仍允许 handler 在 pool mode 下为"同一次请求内重试"补一次性 session key。
+	sessionHash = ""
+	required := requiredCapability
+	preferred := OpenAIImagesCapability("")
 	if requiredCapability == OpenAIImagesCapabilityNative {
-		return s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, OpenAIImagesCapabilityBasic)
+		required = OpenAIImagesCapabilityBasic
+		preferred = OpenAIImagesCapabilityNative
 	}
-	return selection, decision, err
+	return s.selectAccountWithScheduler(ctx, groupID, "", sessionHash, requestedModel, excludedIDs, OpenAIUpstreamTransportHTTPSSE, required, preferred)
 }
 
 func (s *OpenAIGatewayService) selectAccountWithScheduler(
@@ -829,6 +880,7 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 	excludedIDs map[int64]struct{},
 	requiredTransport OpenAIUpstreamTransport,
 	requiredImageCapability OpenAIImagesCapability,
+	preferredImageCapability OpenAIImagesCapability,
 ) (*AccountSelectionResult, OpenAIAccountScheduleDecision, error) {
 	decision := OpenAIAccountScheduleDecision{}
 	scheduler := s.getOpenAIAccountScheduler(ctx)
@@ -893,14 +945,15 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 	}
 
 	return scheduler.Select(ctx, OpenAIAccountScheduleRequest{
-		GroupID:                 groupID,
-		SessionHash:             sessionHash,
-		StickyAccountID:         stickyAccountID,
-		PreviousResponseID:      previousResponseID,
-		RequestedModel:          requestedModel,
-		RequiredTransport:       requiredTransport,
-		RequiredImageCapability: requiredImageCapability,
-		ExcludedIDs:             excludedIDs,
+		GroupID:                  groupID,
+		SessionHash:              sessionHash,
+		StickyAccountID:          stickyAccountID,
+		PreviousResponseID:       previousResponseID,
+		RequestedModel:           requestedModel,
+		RequiredTransport:        requiredTransport,
+		RequiredImageCapability:  requiredImageCapability,
+		PreferredImageCapability: preferredImageCapability,
+		ExcludedIDs:              excludedIDs,
 	})
 }
 

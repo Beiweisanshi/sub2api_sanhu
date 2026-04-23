@@ -113,12 +113,10 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 		return
 	}
 
+	// 图片生成路径不参与跨请求 sticky session。
+	// 仅在 pool mode 账号重试时，由 ensureOpenAIPoolModeSessionHash 补一次性会话键，
+	// 用于保证“同一次请求内”重试仍命中原账号。
 	sessionHash := ""
-	if parsed.Multipart {
-		sessionHash = h.gatewayService.GenerateSessionHashWithFallback(c, nil, parsed.StickySessionSeed())
-	} else {
-		sessionHash = h.gatewayService.GenerateSessionHash(c, body)
-	}
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0

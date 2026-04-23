@@ -662,6 +662,177 @@ func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionSticky(t *testin
 	}
 }
 
+func TestOpenAIGatewayService_SelectAccountWithSchedulerForImages_IgnoresStickySession(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(10010)
+	accounts := []Account{
+		{
+			ID:          2011,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    9,
+		},
+		{
+			ID:          2012,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+		},
+	}
+	cache := &schedulerTestGatewayCache{
+		sessionBindings: map[string]int64{
+			"openai:session_hash_images": 2011,
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              cache,
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, decision, err := svc.SelectAccountWithSchedulerForImages(
+		ctx,
+		&groupID,
+		"session_hash_images",
+		"gpt-image-2",
+		nil,
+		OpenAIImagesCapabilityBasic,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(2012), selection.Account.ID)
+	require.Equal(t, openAIAccountScheduleLayerLoadBalance, decision.Layer)
+	require.False(t, decision.StickySessionHit)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+// 作者: mkx  变更: 2026/04/23 - native 请求时，高优先级的 OAuth 账号应该压过低优先级的 apikey
+// 场景：priority=5 有 2 个 OAuth（仅 basic 能力），priority=20 有 1 个 apikey（支持 native）。
+// 新策略下 priority 是主排序键，native 降为组内偏好——priority=5 组没有 apikey 即同组降级到 OAuth，
+// 不跨越优先级去找 priority=20 的 apikey。
+func TestOpenAIGatewayService_SelectAccountWithSchedulerForImages_PriorityBeatsCapability(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(10020)
+	accounts := []Account{
+		{
+			ID:          3001,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    5,
+		},
+		{
+			ID:          3002,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    5,
+		},
+		{
+			ID:          3003,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    20,
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithSchedulerForImages(
+		ctx,
+		&groupID,
+		"",
+		"gpt-image-2",
+		nil,
+		OpenAIImagesCapabilityNative,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Contains(t, []int64{3001, 3002}, selection.Account.ID,
+		"priority=5 OAuth 应该被选中，priority=20 的 apikey 不应跨组参与")
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
+// 作者: mkx  变更: 2026/04/23 - 同优先级组内 apikey 先于 OAuth
+// 场景：priority=5 组内既有 apikey 也有 OAuth。native 请求下 apikey 应优先拿到。
+func TestOpenAIGatewayService_SelectAccountWithSchedulerForImages_ApikeyPreferredWithinSamePriority(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(10021)
+	accounts := []Account{
+		{
+			ID:          4001,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    5,
+		},
+		{
+			ID:          4002,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeAPIKey,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    5,
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(schedulerTestConcurrencyCache{}),
+	}
+
+	selection, _, err := svc.SelectAccountWithSchedulerForImages(
+		ctx,
+		&groupID,
+		"",
+		"gpt-image-2",
+		nil,
+		OpenAIImagesCapabilityNative,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.Equal(t, int64(4002), selection.Account.ID,
+		"同优先级里 apikey 支持 native 应优先")
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
 func TestOpenAIGatewayService_SelectAccountWithScheduler_SessionStickyBusyKeepsSticky(t *testing.T) {
 	ctx := context.Background()
 	groupID := int64(10100)
