@@ -336,12 +336,14 @@ export default {
     dashboard: '仪表盘',
     announcements: '公告',
     apiKeys: 'API 密钥',
+    plaza: '模型广场',
     usage: '使用记录',
     redeem: '兑换',
     profile: '个人资料',
     users: '用户管理',
     groups: '分组管理',
     channels: '渠道管理',
+    modelPricing: '模型定价',
     subscriptions: '订阅管理',
     accounts: '账号管理',
     proxies: 'IP管理',
@@ -364,6 +366,24 @@ export default {
     paymentDashboard: '支付概览',
     paymentConfig: '支付配置',
     paymentPlans: '订阅套餐'
+  },
+
+  plaza: {
+    title: '模型广场',
+    description: '查看各分组支持的模型及价格',
+    searchPlaceholder: '搜索模型名称',
+    platformAll: '全部平台',
+    multiplier: '倍率',
+    personalRate: '专属倍率',
+    inputPrice: 'Input $/MTok',
+    outputPrice: 'Output $/MTok',
+    cacheReadPrice: 'Cache Read $/MTok',
+    priorityInputPrice: 'Priority Input $/MTok',
+    imagePrice: 'Image $/张',
+    perMTok: '每百万 Tokens',
+    perImage: '每张图片',
+    emptyState: '暂无可用分组，请先购买订阅或联系管理员',
+    loading: '加载模型广场中...'
   },
 
   // Auth
@@ -1982,6 +2002,39 @@ export default {
         geminiImage: 'Gemini Image',
         hint: '至少选择一个模型系列'
       }
+    },
+
+
+    modelPricing: {
+      title: '模型定价',
+      description: '在嵌入 JSON 默认定价之上管理数据库覆写和自定义模型',
+      search: '搜索模型名...',
+      provider: '全部 Provider',
+      addCustom: '新增自定义模型',
+      reset: '重置',
+      resetConfirm: '确定要重置「{name}」的定价覆写吗？',
+      deleteCustomConfirm: '确定要删除自定义模型「{name}」吗？',
+      loadError: '加载模型定价失败',
+      saveError: '保存模型定价失败',
+      deleteError: '删除模型定价失败',
+      empty: '暂无模型定价',
+      columns: {
+        model: '模型',
+        provider: 'Provider',
+        mode: 'Mode',
+        input: '输入',
+        output: '输出',
+        cacheRead: '缓存读',
+        cacheWrite: '缓存写',
+        source: '来源'
+      },
+      source: {
+        embedded: '内置',
+        overridden: '已覆写',
+        custom: '自定义'
+      },
+      edit: '编辑',
+      note: '备注'
     },
 
     // Channel Management

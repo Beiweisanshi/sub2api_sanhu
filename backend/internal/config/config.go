@@ -488,20 +488,9 @@ type TokenRefreshConfig struct {
 	RetryBackoffSeconds int `mapstructure:"retry_backoff_seconds"`
 }
 
-type PricingConfig struct {
-	// 价格数据远程URL（默认使用LiteLLM镜像）
-	RemoteURL string `mapstructure:"remote_url"`
-	// 哈希校验文件URL
-	HashURL string `mapstructure:"hash_url"`
-	// 本地数据目录
-	DataDir string `mapstructure:"data_dir"`
-	// 回退文件路径
-	FallbackFile string `mapstructure:"fallback_file"`
-	// 更新间隔（小时）
-	UpdateIntervalHours int `mapstructure:"update_interval_hours"`
-	// 哈希校验间隔（分钟）
-	HashCheckIntervalMinutes int `mapstructure:"hash_check_interval_minutes"`
-}
+// PricingConfig 保留为空占位，定价数据已在编译期嵌入二进制。
+// mkx: 移除 remote_url / hash_url / data_dir / fallback_file 等远程同步字段 (2026-04-24)
+type PricingConfig struct{}
 
 type ServerConfig struct {
 	Host               string    `mapstructure:"host"`
@@ -539,9 +528,9 @@ type SecurityConfig struct {
 }
 
 type URLAllowlistConfig struct {
-	Enabled           bool     `mapstructure:"enabled"`
-	UpstreamHosts     []string `mapstructure:"upstream_hosts"`
-	PricingHosts      []string `mapstructure:"pricing_hosts"`
+	Enabled       bool     `mapstructure:"enabled"`
+	UpstreamHosts []string `mapstructure:"upstream_hosts"`
+	// mkx: pricing_hosts 字段随远程同步功能一起移除 (2026-04-24)
 	CRSHosts          []string `mapstructure:"crs_hosts"`
 	AllowPrivateHosts bool     `mapstructure:"allow_private_hosts"`
 	// 关闭 URL 白名单校验时，是否允许 http URL（默认只允许 https）
@@ -1521,9 +1510,6 @@ func setDefaults() {
 		"cloudcode-pa.googleapis.com",
 		"*.openai.azure.com",
 	})
-	viper.SetDefault("security.url_allowlist.pricing_hosts", []string{
-		"raw.githubusercontent.com",
-	})
 	viper.SetDefault("security.url_allowlist.crs_hosts", []string{})
 	viper.SetDefault("security.url_allowlist.allow_private_hosts", true)
 	viper.SetDefault("security.url_allowlist.allow_insecure_http", true)
@@ -1666,15 +1652,9 @@ func setDefaults() {
 	viper.SetDefault("rate_limit.overload_cooldown_minutes", 10)
 	viper.SetDefault("rate_limit.oauth_401_cooldown_minutes", 10)
 
-	// Pricing - 从 model-price-repo 同步模型定价和上下文窗口数据（固定到 commit，避免分支漂移）
-	viper.SetDefault("pricing.remote_url", "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json")
-	viper.SetDefault("pricing.hash_url", "https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.sha256")
-	viper.SetDefault("pricing.data_dir", "./data")
-	viper.SetDefault("pricing.fallback_file", "./resources/model-pricing/model_prices_and_context_window.json")
-	viper.SetDefault("pricing.update_interval_hours", 24)
-	viper.SetDefault("pricing.hash_check_interval_minutes", 10)
+	// mkx: 定价数据已改为编译期嵌入，旧的 pricing.* 远程同步配置全部废弃 (2026-04-24)
 
-	// Timezone (default to Asia/Shanghai for Chinese users)
+// Timezone (default to Asia/Shanghai for Chinese users)
 	viper.SetDefault("timezone", "Asia/Shanghai")
 
 	// API Key auth cache

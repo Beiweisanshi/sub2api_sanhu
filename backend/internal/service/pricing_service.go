@@ -1,14 +1,12 @@
+// mkx: 改为启动时从嵌入 JSON 加载定价，删除远程同步/哈希/定时器全套逻辑 (2026-04-24)
 package service
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -16,7 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai"
-	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
+	modelpricing "github.com/Wei-Shaw/sub2api/resources/model-pricing"
 	"go.uber.org/zap"
 )
 
@@ -27,6 +25,20 @@ var (
 		InputCostPerToken:               2.5e-06, // $2.5 per MTok
 		OutputCostPerToken:              1.5e-05, // $15 per MTok
 		CacheReadInputTokenCost:         2.5e-07, // $0.25 per MTok
+		LongContextInputTokenThreshold:  272000,
+		LongContextInputCostMultiplier:  2.0,
+		LongContextOutputCostMultiplier: 1.5,
+		LiteLLMProvider:                 "openai",
+		Mode:                            "chat",
+		SupportsPromptCaching:           true,
+	}
+	openAIGPT55FallbackPricing = &LiteLLMModelPricing{
+		InputCostPerToken:               5e-06,    // $5 per MTok
+		InputCostPerTokenPriority:       1.25e-05, // $12.5 per MTok (2.5x)
+		OutputCostPerToken:              3e-05,    // $30 per MTok
+		OutputCostPerTokenPriority:      7.5e-05,  // $75 per MTok (2.5x)
+		CacheReadInputTokenCost:         5e-07,    // $0.5 per MTok
+		CacheReadInputTokenCostPriority: 1.25e-06, // $1.25 per MTok (2.5x)
 		LongContextInputTokenThreshold:  272000,
 		LongContextInputCostMultiplier:  2.0,
 		LongContextOutputCostMultiplier: 1.5,
@@ -74,12 +86,6 @@ type LiteLLMModelPricing struct {
 	OutputCostPerImageToken             float64 `json:"output_cost_per_image_token"` // 图片输出 token 价格
 }
 
-// PricingRemoteClient 远程价格数据获取接口
-type PricingRemoteClient interface {
-	FetchPricingJSON(ctx context.Context, url string) ([]byte, error)
-	FetchHashText(ctx context.Context, url string) (string, error)
-}
-
 // LiteLLMRawEntry 用于解析原始JSON数据
 type LiteLLMRawEntry struct {
 	InputCostPerToken                   *float64 `json:"input_cost_per_token"`
@@ -98,252 +104,83 @@ type LiteLLMRawEntry struct {
 	OutputCostPerImageToken             *float64 `json:"output_cost_per_image_token"`
 }
 
-// PricingService 动态价格服务
+// PricingService 定价服务，定价数据在编译期嵌入二进制。
+// ModelPricingOverride 是数据库中的模型定价覆写 DTO。
+//
+// mkx 2026-04-24：接口放在 service 包，仓储实现反向依赖该 DTO，避免 service 依赖 repository。
+type ModelPricingOverride struct {
+	ModelName                   string
+	InputCostPerToken           *float64
+	OutputCostPerToken          *float64
+	CacheReadInputTokenCost     *float64
+	CacheCreationInputTokenCost *float64
+	IsCustom                    bool
+	Note                        string
+	CreatedAt                   time.Time
+	UpdatedAt                   time.Time
+}
+
+// ModelPricingRepository 定义模型定价覆写仓储接口。
+type ModelPricingRepository interface {
+	List(ctx context.Context) ([]*ModelPricingOverride, error)
+	Upsert(ctx context.Context, e *ModelPricingOverride) error
+	DeleteByName(ctx context.Context, name string) error
+}
+
+// ModelPricingListItem 是管理页展示用的定价聚合行。
+type ModelPricingListItem struct {
+	ModelName   string
+	Base        *LiteLLMModelPricing
+	Override    *ModelPricingOverride
+	Effective   *LiteLLMModelPricing
+	IsCustom    bool
+	HasOverride bool
+	Note        string
+}
+
+// PricingService 定价服务，定价数据在编译期嵌入二进制。
 type PricingService struct {
 	cfg          *config.Config
-	remoteClient PricingRemoteClient
+	overrideRepo ModelPricingRepository
 	mu           sync.RWMutex
+	baseData     map[string]*LiteLLMModelPricing
 	pricingData  map[string]*LiteLLMModelPricing
-	lastUpdated  time.Time
-	localHash    string
-
-	// 停止信号
-	stopCh chan struct{}
-	wg     sync.WaitGroup
+	overrides    map[string]*ModelPricingOverride
+	loadedAt     time.Time
 }
 
 // NewPricingService 创建价格服务
-func NewPricingService(cfg *config.Config, remoteClient PricingRemoteClient) *PricingService {
-	s := &PricingService{
+func NewPricingService(cfg *config.Config, overrideRepo ModelPricingRepository) *PricingService {
+	return &PricingService{
 		cfg:          cfg,
-		remoteClient: remoteClient,
+		overrideRepo: overrideRepo,
+		baseData:     make(map[string]*LiteLLMModelPricing),
 		pricingData:  make(map[string]*LiteLLMModelPricing),
-		stopCh:       make(chan struct{}),
+		overrides:    make(map[string]*ModelPricingOverride),
 	}
-	return s
 }
 
-// Initialize 初始化价格服务
+// Initialize 从嵌入 JSON 一次性加载定价数据
 func (s *PricingService) Initialize() error {
-	// 确保数据目录存在
-	if err := os.MkdirAll(s.cfg.Pricing.DataDir, 0755); err != nil {
-		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to create data directory: %v", err)
-	}
-
-	// 首次加载价格数据
-	if err := s.checkAndUpdatePricing(); err != nil {
-		logger.LegacyPrintf("service.pricing", "[Pricing] Initial load failed, using fallback: %v", err)
-		if err := s.useFallbackPricing(); err != nil {
-			return fmt.Errorf("failed to load pricing data: %w", err)
-		}
-	}
-
-	// 启动定时更新
-	s.startUpdateScheduler()
-
-	logger.LegacyPrintf("service.pricing", "[Pricing] Service initialized with %d models", len(s.pricingData))
-	return nil
-}
-
-// Stop 停止价格服务
-func (s *PricingService) Stop() {
-	close(s.stopCh)
-	s.wg.Wait()
-	logger.LegacyPrintf("service.pricing", "%s", "[Pricing] Service stopped")
-}
-
-// startUpdateScheduler 启动定时更新调度器
-func (s *PricingService) startUpdateScheduler() {
-	// 定期检查哈希更新
-	hashInterval := time.Duration(s.cfg.Pricing.HashCheckIntervalMinutes) * time.Minute
-	if hashInterval < time.Minute {
-		hashInterval = 10 * time.Minute
-	}
-
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		ticker := time.NewTicker(hashInterval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ticker.C:
-				if err := s.syncWithRemote(); err != nil {
-					logger.LegacyPrintf("service.pricing", "[Pricing] Sync failed: %v", err)
-				}
-			case <-s.stopCh:
-				return
-			}
-		}
-	}()
-
-	logger.LegacyPrintf("service.pricing", "[Pricing] Update scheduler started (check every %v)", hashInterval)
-}
-
-// checkAndUpdatePricing 检查并更新价格数据
-func (s *PricingService) checkAndUpdatePricing() error {
-	pricingFile := s.getPricingFilePath()
-
-	// 检查本地文件是否存在
-	if _, err := os.Stat(pricingFile); os.IsNotExist(err) {
-		logger.LegacyPrintf("service.pricing", "%s", "[Pricing] Local pricing file not found, downloading...")
-		return s.downloadPricingData()
-	}
-
-	// 先加载本地文件（确保服务可用），再检查是否需要更新
-	if err := s.loadPricingData(pricingFile); err != nil {
-		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to load local file, downloading: %v", err)
-		return s.downloadPricingData()
-	}
-
-	// 如果配置了哈希URL，通过远程哈希检查是否有更新
-	if s.cfg.Pricing.HashURL != "" {
-		remoteHash, err := s.fetchRemoteHash()
-		if err != nil {
-			logger.LegacyPrintf("service.pricing", "[Pricing] Failed to fetch remote hash on startup: %v", err)
-			return nil // 已加载本地文件，哈希获取失败不影响启动
-		}
-
-		s.mu.RLock()
-		localHash := s.localHash
-		s.mu.RUnlock()
-
-		if localHash == "" || remoteHash != localHash {
-			logger.LegacyPrintf("service.pricing", "[Pricing] Remote hash differs on startup (local=%s remote=%s), downloading...",
-				localHash[:min(8, len(localHash))], remoteHash[:min(8, len(remoteHash))])
-			if err := s.downloadPricingData(); err != nil {
-				logger.LegacyPrintf("service.pricing", "[Pricing] Download failed, using existing file: %v", err)
-			}
-		}
-		return nil
-	}
-
-	// 没有哈希URL时，基于文件年龄检查
-	info, err := os.Stat(pricingFile)
+	data, err := s.parsePricingData(modelpricing.JSON)
 	if err != nil {
-		return nil // 已加载本地文件
+		return fmt.Errorf("parse embedded pricing data: %w", err)
 	}
 
-	fileAge := time.Since(info.ModTime())
-	maxAge := time.Duration(s.cfg.Pricing.UpdateIntervalHours) * time.Hour
-
-	if fileAge > maxAge {
-		logger.LegacyPrintf("service.pricing", "[Pricing] Local file is %v old, updating...", fileAge.Round(time.Hour))
-		if err := s.downloadPricingData(); err != nil {
-			logger.LegacyPrintf("service.pricing", "[Pricing] Download failed, using existing file: %v", err)
-		}
-	}
-
-	return nil
-}
-
-// syncWithRemote 与远程同步（基于哈希校验）
-func (s *PricingService) syncWithRemote() error {
-	// 如果配置了哈希URL，从远程获取哈希进行比对
-	if s.cfg.Pricing.HashURL != "" {
-		remoteHash, err := s.fetchRemoteHash()
-		if err != nil {
-			logger.LegacyPrintf("service.pricing", "[Pricing] Failed to fetch remote hash: %v", err)
-			return nil // 哈希获取失败不影响正常使用
-		}
-
-		s.mu.RLock()
-		localHash := s.localHash
-		s.mu.RUnlock()
-
-		if localHash == "" || remoteHash != localHash {
-			logger.LegacyPrintf("service.pricing", "[Pricing] Remote hash differs (local=%s remote=%s), downloading new version...",
-				localHash[:min(8, len(localHash))], remoteHash[:min(8, len(remoteHash))])
-			return s.downloadPricingData()
-		}
-		logger.LegacyPrintf("service.pricing", "%s", "[Pricing] Hash check passed, no update needed")
-		return nil
-	}
-
-	// 没有哈希URL时，基于时间检查
-	pricingFile := s.getPricingFilePath()
-	info, err := os.Stat(pricingFile)
-	if err != nil {
-		return s.downloadPricingData()
-	}
-
-	fileAge := time.Since(info.ModTime())
-	maxAge := time.Duration(s.cfg.Pricing.UpdateIntervalHours) * time.Hour
-
-	if fileAge > maxAge {
-		logger.LegacyPrintf("service.pricing", "[Pricing] File is %v old, downloading...", fileAge.Round(time.Hour))
-		return s.downloadPricingData()
-	}
-
-	return nil
-}
-
-// downloadPricingData 从远程下载价格数据
-func (s *PricingService) downloadPricingData() error {
-	remoteURL, err := s.validatePricingURL(s.cfg.Pricing.RemoteURL)
-	if err != nil {
-		return err
-	}
-	logger.LegacyPrintf("service.pricing", "[Pricing] Downloading from %s", remoteURL)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// 获取远程哈希（用于同步锚点，不作为完整性校验）
-	var remoteHash string
-	if strings.TrimSpace(s.cfg.Pricing.HashURL) != "" {
-		remoteHash, err = s.fetchRemoteHash()
-		if err != nil {
-			logger.LegacyPrintf("service.pricing", "[Pricing] Failed to fetch remote hash (continuing): %v", err)
-		}
-	}
-
-	body, err := s.remoteClient.FetchPricingJSON(ctx, remoteURL)
-	if err != nil {
-		return fmt.Errorf("download failed: %w", err)
-	}
-
-	// 哈希校验：不匹配时仅告警，不阻止更新
-	// 远程哈希文件可能与数据文件不同步（如维护者更新了数据但未更新哈希文件）
-	dataHash := sha256.Sum256(body)
-	dataHashStr := hex.EncodeToString(dataHash[:])
-	if remoteHash != "" && !strings.EqualFold(remoteHash, dataHashStr) {
-		logger.LegacyPrintf("service.pricing", "[Pricing] Hash mismatch warning: remote=%s data=%s (hash file may be out of sync)",
-			remoteHash[:min(8, len(remoteHash))], dataHashStr[:8])
-	}
-
-	// 解析JSON数据（使用灵活的解析方式）
-	data, err := s.parsePricingData(body)
-	if err != nil {
-		return fmt.Errorf("parse pricing data: %w", err)
-	}
-
-	// 保存到本地文件
-	pricingFile := s.getPricingFilePath()
-	if err := os.WriteFile(pricingFile, body, 0644); err != nil {
-		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to save file: %v", err)
-	}
-
-	// 使用远程哈希作为同步锚点，防止重复下载
-	// 当远程哈希不可用时，回退到数据本身的哈希
-	syncHash := dataHashStr
-	if remoteHash != "" {
-		syncHash = remoteHash
-	}
-	hashFile := s.getHashFilePath()
-	if err := os.WriteFile(hashFile, []byte(syncHash+"\n"), 0644); err != nil {
-		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to save hash: %v", err)
-	}
-
-	// 更新内存数据
 	s.mu.Lock()
-	s.pricingData = data
-	s.lastUpdated = time.Now()
-	s.localHash = syncHash
+	s.baseData = data
+	s.pricingData = clonePricingMap(data)
+	s.overrides = make(map[string]*ModelPricingOverride)
+	s.loadedAt = time.Now()
 	s.mu.Unlock()
 
-	logger.LegacyPrintf("service.pricing", "[Pricing] Downloaded %d models successfully", len(data))
+	if s.overrideRepo != nil {
+		if err := s.loadOverrides(context.Background()); err != nil {
+			logger.LegacyPrintf("service.pricing", "[Pricing] Failed to load DB pricing overrides: %v", err)
+		}
+	}
+
+	logger.LegacyPrintf("service.pricing", "[Pricing] Loaded %d models from embedded JSON", len(data))
 	return nil
 }
 
@@ -428,97 +265,191 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 	return result, nil
 }
 
-// loadPricingData 从本地文件加载价格数据
-func (s *PricingService) loadPricingData(filePath string) error {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return fmt.Errorf("read file failed: %w", err)
+// ReloadOverrides 重新加载数据库覆写并热刷新内存定价。
+//
+// mkx 2026-04-24：写入 DB 后立即调用，保证管理页变更不需要重启服务。
+func (s *PricingService) ReloadOverrides(ctx context.Context) error {
+	return s.loadOverrides(ctx)
+}
+
+func (s *PricingService) loadOverrides(ctx context.Context) error {
+	if s.overrideRepo == nil {
+		s.mu.Lock()
+		s.pricingData = clonePricingMap(s.baseData)
+		s.overrides = make(map[string]*ModelPricingOverride)
+		s.loadedAt = time.Now()
+		s.mu.Unlock()
+		return nil
 	}
 
-	// 使用灵活的解析方式
-	pricingData, err := s.parsePricingData(data)
+	overrides, err := s.overrideRepo.List(ctx)
 	if err != nil {
-		return fmt.Errorf("parse pricing data: %w", err)
+		return fmt.Errorf("list pricing overrides: %w", err)
 	}
-
-	// 计算哈希
-	hash := sha256.Sum256(data)
-	hashStr := hex.EncodeToString(hash[:])
 
 	s.mu.Lock()
-	s.pricingData = pricingData
-	s.localHash = hashStr
+	defer s.mu.Unlock()
 
-	info, _ := os.Stat(filePath)
-	if info != nil {
-		s.lastUpdated = info.ModTime()
-	} else {
-		s.lastUpdated = time.Now()
+	merged := clonePricingMap(s.baseData)
+	indexed := make(map[string]*ModelPricingOverride, len(overrides))
+	for _, override := range overrides {
+		if override == nil {
+			continue
+		}
+		modelName := strings.TrimSpace(override.ModelName)
+		if modelName == "" {
+			continue
+		}
+
+		copyOverride := cloneModelPricingOverride(override)
+		copyOverride.ModelName = modelName
+		indexed[modelName] = copyOverride
+
+		base, hasBase := merged[modelName]
+		if !hasBase {
+			if !override.IsCustom {
+				continue
+			}
+			base = &LiteLLMModelPricing{LiteLLMProvider: "custom", Mode: "custom"}
+		}
+
+		merged[modelName] = applyModelPricingOverride(base, copyOverride)
 	}
-	s.mu.Unlock()
 
-	logger.LegacyPrintf("service.pricing", "[Pricing] Loaded %d models from %s", len(pricingData), filePath)
+	s.pricingData = merged
+	s.overrides = indexed
+	s.loadedAt = time.Now()
+	logger.LegacyPrintf("service.pricing", "[Pricing] Applied %d model pricing overrides", len(indexed))
 	return nil
 }
 
-// useFallbackPricing 使用回退价格文件
-func (s *PricingService) useFallbackPricing() error {
-	fallbackFile := s.cfg.Pricing.FallbackFile
-
-	if _, err := os.Stat(fallbackFile); os.IsNotExist(err) {
-		return fmt.Errorf("fallback file not found: %s", fallbackFile)
+// ListAllPricing 返回管理页可见的全部模型定价。
+func (s *PricingService) ListAllPricing(ctx context.Context) ([]ModelPricingListItem, error) {
+	if err := s.ReloadOverrides(ctx); err != nil {
+		return nil, err
 	}
 
-	logger.LegacyPrintf("service.pricing", "[Pricing] Using fallback file: %s", fallbackFile)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
-	// 复制到数据目录
-	data, err := os.ReadFile(fallbackFile)
-	if err != nil {
-		return fmt.Errorf("read fallback failed: %w", err)
+	items := make([]ModelPricingListItem, 0, len(s.pricingData))
+	for modelName, effective := range s.pricingData {
+		base := clonePricing(s.baseData[modelName])
+		override := cloneModelPricingOverride(s.overrides[modelName])
+		items = append(items, ModelPricingListItem{
+			ModelName:   modelName,
+			Base:        base,
+			Override:    override,
+			Effective:   clonePricing(effective),
+			IsCustom:    override != nil && override.IsCustom && base == nil,
+			HasOverride: override != nil,
+			Note:        noteFromOverride(override),
+		})
 	}
 
-	pricingFile := s.getPricingFilePath()
-	if err := os.WriteFile(pricingFile, data, 0644); err != nil {
-		logger.LegacyPrintf("service.pricing", "[Pricing] Failed to copy fallback: %v", err)
-	}
-
-	return s.loadPricingData(fallbackFile)
-}
-
-// fetchRemoteHash 从远程获取哈希值
-func (s *PricingService) fetchRemoteHash() (string, error) {
-	hashURL, err := s.validatePricingURL(s.cfg.Pricing.HashURL)
-	if err != nil {
-		return "", err
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	hash, err := s.remoteClient.FetchHashText(ctx, hashURL)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(hash), nil
-}
-
-func (s *PricingService) validatePricingURL(raw string) (string, error) {
-	if s.cfg != nil && !s.cfg.Security.URLAllowlist.Enabled {
-		normalized, err := urlvalidator.ValidateURLFormat(raw, s.cfg.Security.URLAllowlist.AllowInsecureHTTP)
-		if err != nil {
-			return "", fmt.Errorf("invalid pricing url: %w", err)
-		}
-		return normalized, nil
-	}
-	normalized, err := urlvalidator.ValidateHTTPSURL(raw, urlvalidator.ValidationOptions{
-		AllowedHosts:     s.cfg.Security.URLAllowlist.PricingHosts,
-		RequireAllowlist: true,
-		AllowPrivate:     s.cfg.Security.URLAllowlist.AllowPrivateHosts,
+	sort.Slice(items, func(i, j int) bool {
+		return strings.ToLower(items[i].ModelName) < strings.ToLower(items[j].ModelName)
 	})
-	if err != nil {
-		return "", fmt.Errorf("invalid pricing url: %w", err)
+	return items, nil
+}
+
+// UpsertOverride 保存模型定价覆写并刷新内存定价。
+func (s *PricingService) UpsertOverride(ctx context.Context, override *ModelPricingOverride) error {
+	if s.overrideRepo == nil {
+		return fmt.Errorf("model pricing repository is not configured")
 	}
-	return normalized, nil
+	if override == nil || strings.TrimSpace(override.ModelName) == "" {
+		return fmt.Errorf("model name is required")
+	}
+	override.ModelName = strings.TrimSpace(override.ModelName)
+	if err := s.overrideRepo.Upsert(ctx, override); err != nil {
+		return err
+	}
+	return s.ReloadOverrides(ctx)
+}
+
+// DeleteOverride 删除模型定价覆写；自定义模型会同时从内存定价中移除。
+func (s *PricingService) DeleteOverride(ctx context.Context, name string) error {
+	if s.overrideRepo == nil {
+		return fmt.Errorf("model pricing repository is not configured")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("model name is required")
+	}
+	if err := s.overrideRepo.DeleteByName(ctx, name); err != nil {
+		return err
+	}
+	return s.ReloadOverrides(ctx)
+}
+
+// Stop 保留给 Wire cleanup 调用，当前定价服务无后台任务需要关闭。
+func (s *PricingService) Stop() {}
+
+func applyModelPricingOverride(base *LiteLLMModelPricing, override *ModelPricingOverride) *LiteLLMModelPricing {
+	pricing := clonePricing(base)
+	if pricing == nil {
+		pricing = &LiteLLMModelPricing{LiteLLMProvider: "custom", Mode: "custom"}
+	}
+	if override == nil {
+		return pricing
+	}
+	if override.InputCostPerToken != nil {
+		pricing.InputCostPerToken = *override.InputCostPerToken
+	}
+	if override.OutputCostPerToken != nil {
+		pricing.OutputCostPerToken = *override.OutputCostPerToken
+	}
+	if override.CacheReadInputTokenCost != nil {
+		pricing.CacheReadInputTokenCost = *override.CacheReadInputTokenCost
+	}
+	if override.CacheCreationInputTokenCost != nil {
+		pricing.CacheCreationInputTokenCost = *override.CacheCreationInputTokenCost
+	}
+	return pricing
+}
+
+func clonePricingMap(source map[string]*LiteLLMModelPricing) map[string]*LiteLLMModelPricing {
+	out := make(map[string]*LiteLLMModelPricing, len(source))
+	for name, pricing := range source {
+		out[name] = clonePricing(pricing)
+	}
+	return out
+}
+
+func clonePricing(pricing *LiteLLMModelPricing) *LiteLLMModelPricing {
+	if pricing == nil {
+		return nil
+	}
+	clone := *pricing
+	return &clone
+}
+
+func cloneModelPricingOverride(override *ModelPricingOverride) *ModelPricingOverride {
+	if override == nil {
+		return nil
+	}
+	clone := *override
+	clone.InputCostPerToken = cloneFloat64Ptr(override.InputCostPerToken)
+	clone.OutputCostPerToken = cloneFloat64Ptr(override.OutputCostPerToken)
+	clone.CacheReadInputTokenCost = cloneFloat64Ptr(override.CacheReadInputTokenCost)
+	clone.CacheCreationInputTokenCost = cloneFloat64Ptr(override.CacheCreationInputTokenCost)
+	return &clone
+}
+
+func cloneFloat64Ptr(v *float64) *float64 {
+	if v == nil {
+		return nil
+	}
+	clone := *v
+	return &clone
+}
+
+func noteFromOverride(override *ModelPricingOverride) string {
+	if override == nil {
+		return ""
+	}
+	return override.Note
 }
 
 // GetModelPricing 获取模型价格（带模糊匹配）
@@ -794,6 +725,13 @@ func (s *PricingService) matchOpenAIModel(model string) *LiteLLMModelPricing {
 		}
 	}
 
+	// GPT-5.5 回退到独立定价
+	if strings.HasPrefix(model, "gpt-5.5") {
+		logger.With(zap.String("component", "service.pricing")).
+			Info(fmt.Sprintf("[Pricing] OpenAI fallback matched %s -> %s", model, "gpt-5.5(static)"))
+		return openAIGPT55FallbackPricing
+	}
+
 	if strings.HasPrefix(model, "gpt-5.4-mini") {
 		logger.With(zap.String("component", "service.pricing")).
 			Info(fmt.Sprintf("[Pricing] OpenAI fallback matched %s -> %s", model, "gpt-5.4-mini(static)"))
@@ -862,25 +800,10 @@ func (s *PricingService) GetStatus() map[string]any {
 	defer s.mu.RUnlock()
 
 	return map[string]any{
-		"model_count":  len(s.pricingData),
-		"last_updated": s.lastUpdated,
-		"local_hash":   s.localHash[:min(8, len(s.localHash))],
+		"model_count": len(s.pricingData),
+		"source":      "embedded",
+		"loaded_at":   s.loadedAt,
 	}
-}
-
-// ForceUpdate 强制更新
-func (s *PricingService) ForceUpdate() error {
-	return s.downloadPricingData()
-}
-
-// getPricingFilePath 获取价格文件路径
-func (s *PricingService) getPricingFilePath() string {
-	return filepath.Join(s.cfg.Pricing.DataDir, "model_pricing.json")
-}
-
-// getHashFilePath 获取哈希文件路径
-func (s *PricingService) getHashFilePath() string {
-	return filepath.Join(s.cfg.Pricing.DataDir, "model_pricing.sha256")
 }
 
 // isNumeric 检查字符串是否为纯数字

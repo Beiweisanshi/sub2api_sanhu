@@ -34,6 +34,7 @@ func ProvideAdminHandlers(
 	apiKeyHandler *admin.AdminAPIKeyHandler,
 	scheduledTestHandler *admin.ScheduledTestHandler,
 	channelHandler *admin.ChannelHandler,
+	modelPricingHandler *admin.ModelPricingHandler,
 	paymentHandler *admin.PaymentHandler,
 ) *AdminHandlers {
 	return &AdminHandlers{
@@ -62,6 +63,7 @@ func ProvideAdminHandlers(
 		APIKey:                apiKeyHandler,
 		ScheduledTest:         scheduledTestHandler,
 		Channel:               channelHandler,
+		ModelPricing:          modelPricingHandler,
 		Payment:               paymentHandler,
 	}
 }
@@ -81,6 +83,7 @@ func ProvideHandlers(
 	authHandler *AuthHandler,
 	userHandler *UserHandler,
 	apiKeyHandler *APIKeyHandler,
+	plazaHandler *PlazaHandler,
 	usageHandler *UsageHandler,
 	redeemHandler *RedeemHandler,
 	subscriptionHandler *SubscriptionHandler,
@@ -100,6 +103,7 @@ func ProvideHandlers(
 		Auth:           authHandler,
 		User:           userHandler,
 		APIKey:         apiKeyHandler,
+		Plaza:          plazaHandler,
 		Usage:          usageHandler,
 		Redeem:         redeemHandler,
 		Subscription:   subscriptionHandler,
@@ -121,6 +125,7 @@ var ProviderSet = wire.NewSet(
 	NewAuthHandler,
 	NewUserHandler,
 	NewAPIKeyHandler,
+	NewPlazaHandler,
 	NewUsageHandler,
 	NewRedeemHandler,
 	NewSubscriptionHandler,
@@ -159,6 +164,7 @@ var ProviderSet = wire.NewSet(
 	admin.NewAdminAPIKeyHandler,
 	admin.NewScheduledTestHandler,
 	admin.NewChannelHandler,
+	admin.NewModelPricingHandler,
 	admin.NewPaymentHandler,
 
 	// AdminHandlers and Handlers constructors

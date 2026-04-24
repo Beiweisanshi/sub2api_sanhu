@@ -219,6 +219,22 @@ const DashboardIcon = {
  )
 }
 
+
+const PlazaIcon = {
+ render: () =>
+ h(
+ 'svg',
+ { fill: 'none', viewBox: '0 0 24 24', stroke: 'currentColor', 'stroke-width': '1.5' },
+ [
+ h('path', {
+ 'stroke-linecap': 'round',
+ 'stroke-linejoin': 'round',
+ d: 'M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.456-2.456L14.25 6l1.035-.259a3.375 3.375 0 002.456-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456zM16.894 20.567L16.5 21.75l-.394-1.183a2.25 2.25 0 00-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 001.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 001.423 1.423l1.183.394-1.183.394a2.25 2.25 0 00-1.423 1.423z'
+ })
+ ]
+ )
+}
+
 const KeyIcon = {
  render: () =>
  h(
@@ -319,6 +335,21 @@ const ChannelIcon = {
  'stroke-linecap': 'round',
  'stroke-linejoin': 'round',
  d: 'M6.429 9.75L2.25 12l4.179 2.25m0-4.5l5.571 3 5.571-3m-11.142 0L2.25 7.5 12 2.25l9.75 5.25-4.179 2.25m0 0l4.179 2.25L12 17.25 2.25 12m15.321-2.25l4.179 2.25L12 17.25l-9.75-5.25'
+ })
+ ]
+ )
+}
+
+const PricingIcon = {
+ render: () =>
+ h(
+ 'svg',
+ { fill: 'none', viewBox: '0 0 24 24', stroke: 'currentColor', 'stroke-width': '1.5' },
+ [
+ h('path', {
+ 'stroke-linecap': 'round',
+ 'stroke-linejoin': 'round',
+ d: 'M12 6v12m-3-2.5h4.5a2.5 2.5 0 000-5H10.5a2.5 2.5 0 010-5H15M4.5 19.5h15a1.5 1.5 0 001.5-1.5V6a1.5 1.5 0 00-1.5-1.5h-15A1.5 1.5 0 003 6v12a1.5 1.5 0 001.5 1.5z'
  })
  ]
  )
@@ -524,6 +555,7 @@ const userNavItems = computed((): NavItem[] => {
  const items: NavItem[] = [
  { path: '/dashboard', label: t('nav.dashboard'), icon: DashboardIcon },
  { path: '/keys', label: t('nav.apiKeys'), icon: KeyIcon },
+ { path: '/plaza', label: t('nav.plaza'), icon: PlazaIcon, hideInSimpleMode: true },
  { path: '/usage', label: t('nav.usage'), icon: ChartIcon, hideInSimpleMode: true },
  { path: '/subscriptions', label: t('nav.mySubscriptions'), icon: CreditCardIcon, hideInSimpleMode: true },
  ...(appStore.cachedPublicSettings?.payment_enabled
@@ -562,6 +594,7 @@ const userNavItems = computed((): NavItem[] => {
 const personalNavItems = computed((): NavItem[] => {
  const items: NavItem[] = [
  { path: '/keys', label: t('nav.apiKeys'), icon: KeyIcon },
+ { path: '/plaza', label: t('nav.plaza'), icon: PlazaIcon, hideInSimpleMode: true },
  { path: '/usage', label: t('nav.usage'), icon: ChartIcon, hideInSimpleMode: true },
  { path: '/subscriptions', label: t('nav.mySubscriptions'), icon: CreditCardIcon, hideInSimpleMode: true },
  ...(appStore.cachedPublicSettings?.payment_enabled
@@ -620,6 +653,7 @@ const adminNavItems = computed((): NavItem[] => {
  { path: '/admin/users', label: t('nav.users'), icon: UsersIcon, hideInSimpleMode: true },
  { path: '/admin/groups', label: t('nav.groups'), icon: FolderIcon, hideInSimpleMode: true },
  { path: '/admin/channels', label: t('nav.channels', '渠道管理'), icon: ChannelIcon, hideInSimpleMode: true },
+ { path: '/admin/model-pricing', label: t('nav.modelPricing'), icon: PricingIcon, hideInSimpleMode: true },
  { path: '/admin/subscriptions', label: t('nav.subscriptions'), icon: CreditCardIcon, hideInSimpleMode: true },
  { path: '/admin/accounts', label: t('nav.accounts'), icon: GlobeIcon },
  { path: '/admin/announcements', label: t('nav.announcements'), icon: BellIcon },

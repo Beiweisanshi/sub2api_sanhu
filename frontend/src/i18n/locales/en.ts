@@ -336,12 +336,14 @@ export default {
     dashboard: 'Dashboard',
     announcements: 'Announcements',
     apiKeys: 'API Keys',
+    plaza: 'Model Plaza',
     usage: 'Usage',
     redeem: 'Redeem',
     profile: 'Profile',
     users: 'Users',
     groups: 'Groups',
     channels: 'Channels',
+    modelPricing: 'Model Pricing',
     subscriptions: 'Subscriptions',
     accounts: 'Accounts',
     proxies: 'Proxies',
@@ -364,6 +366,24 @@ export default {
     paymentDashboard: 'Payment Dashboard',
     paymentConfig: 'Payment Config',
     paymentPlans: 'Plans'
+  },
+
+  plaza: {
+    title: 'Model Plaza',
+    description: 'Browse models and pricing by group',
+    searchPlaceholder: 'Search model names',
+    platformAll: 'All platforms',
+    multiplier: 'Multiplier',
+    personalRate: 'Personal rate',
+    inputPrice: 'Input $/MTok',
+    outputPrice: 'Output $/MTok',
+    cacheReadPrice: 'Cache Read $/MTok',
+    priorityInputPrice: 'Priority Input $/MTok',
+    imagePrice: 'Image $/image',
+    perMTok: 'per MTok',
+    perImage: 'per image',
+    emptyState: 'No available groups. Please purchase a subscription or contact an administrator.',
+    loading: 'Loading Model Plaza...'
   },
 
   // Auth
@@ -1903,6 +1923,39 @@ export default {
         geminiImage: 'Gemini Image',
         hint: 'Select at least one model family'
       }
+    },
+
+
+    modelPricing: {
+      title: 'Model Pricing',
+      description: 'Manage database overrides and custom models on top of embedded JSON pricing',
+      search: 'Search model name...',
+      provider: 'All Providers',
+      addCustom: 'Add Custom Model',
+      reset: 'Reset',
+      resetConfirm: 'Reset pricing override for "{name}"?',
+      deleteCustomConfirm: 'Delete custom model "{name}"?',
+      loadError: 'Failed to load model pricing',
+      saveError: 'Failed to save model pricing',
+      deleteError: 'Failed to delete model pricing',
+      empty: 'No model pricing found',
+      columns: {
+        model: 'Model',
+        provider: 'Provider',
+        mode: 'Mode',
+        input: 'Input',
+        output: 'Output',
+        cacheRead: 'Cache Read',
+        cacheWrite: 'Cache Write',
+        source: 'Source'
+      },
+      source: {
+        embedded: 'Embedded',
+        overridden: 'Overridden',
+        custom: 'Custom'
+      },
+      edit: 'Edit',
+      note: 'Note'
     },
 
     // Channel Management

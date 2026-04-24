@@ -31,6 +31,7 @@ type AdminHandlers struct {
 	APIKey                *admin.AdminAPIKeyHandler
 	ScheduledTest         *admin.ScheduledTestHandler
 	Channel               *admin.ChannelHandler
+	ModelPricing          *admin.ModelPricingHandler
 	Payment               *admin.PaymentHandler
 }
 
@@ -39,6 +40,7 @@ type Handlers struct {
 	Auth           *AuthHandler
 	User           *UserHandler
 	APIKey         *APIKeyHandler
+	Plaza          *PlazaHandler
 	Usage          *UsageHandler
 	Redeem         *RedeemHandler
 	Subscription   *SubscriptionHandler

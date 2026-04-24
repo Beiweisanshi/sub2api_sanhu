@@ -217,6 +217,21 @@ func (s *BillingService) initFallbackPricing() {
 		LongContextInputMultiplier:     openAIGPT54LongContextInputMultiplier,
 		LongContextOutputMultiplier:    openAIGPT54LongContextOutputMultiplier,
 	}
+	// GPT-5.5 独立定价，Fast 模式 2.5x
+	s.fallbackPrices["gpt-5.5"] = &ModelPricing{
+		InputPricePerToken:             5e-6,    // $5 per MTok
+		InputPricePerTokenPriority:     12.5e-6, // $12.5 per MTok (2.5x)
+		OutputPricePerToken:            30e-6,   // $30 per MTok
+		OutputPricePerTokenPriority:    75e-6,   // $75 per MTok (2.5x)
+		CacheCreationPricePerToken:     5e-6,    // $5 per MTok
+		CacheReadPricePerToken:         0.5e-6,  // $0.5 per MTok
+		CacheReadPricePerTokenPriority: 1.25e-6, // $1.25 per MTok (2.5x)
+		SupportsCacheBreakdown:         false,
+		LongContextInputThreshold:      openAIGPT54LongContextInputThreshold,
+		LongContextInputMultiplier:     openAIGPT54LongContextInputMultiplier,
+		LongContextOutputMultiplier:    openAIGPT54LongContextOutputMultiplier,
+	}
+
 	s.fallbackPrices["gpt-5.4-mini"] = &ModelPricing{
 		InputPricePerToken:     7.5e-7,
 		OutputPricePerToken:    4.5e-6,
@@ -288,6 +303,8 @@ func (s *BillingService) getFallbackPricing(model string) *ModelPricing {
 	if strings.Contains(modelLower, "gpt-5") || strings.Contains(modelLower, "codex") {
 		normalized := normalizeCodexModel(modelLower)
 		switch normalized {
+		case "gpt-5.5":
+			return s.fallbackPrices["gpt-5.5"]
 		case "gpt-5.4-mini":
 			return s.fallbackPrices["gpt-5.4-mini"]
 		case "gpt-5.4":
@@ -637,7 +654,8 @@ func isOpenAIGPT54Model(model string) bool {
 	if !strings.Contains(trimmed, "gpt-5") && !strings.Contains(trimmed, "codex") {
 		return false
 	}
-	return normalizeCodexModel(trimmed) == "gpt-5.4"
+	normalized := normalizeCodexModel(trimmed)
+	return normalized == "gpt-5.4" || normalized == "gpt-5.5"
 }
 
 // CalculateCostWithConfig 使用配置中的默认倍率计算费用
@@ -759,23 +777,15 @@ func (s *BillingService) GetEstimatedCost(model string, estimatedInputTokens, es
 }
 
 // GetPricingServiceStatus 获取价格服务状态
+// mkx: 定价已嵌入二进制，不再有远程同步字段 (2026-04-24)
 func (s *BillingService) GetPricingServiceStatus() map[string]any {
 	if s.pricingService != nil {
 		return s.pricingService.GetStatus()
 	}
 	return map[string]any{
-		"model_count":  len(s.fallbackPrices),
-		"last_updated": "using fallback",
-		"local_hash":   "N/A",
+		"model_count": len(s.fallbackPrices),
+		"source":      "fallback",
 	}
-}
-
-// ForceUpdatePricing 强制更新价格数据
-func (s *BillingService) ForceUpdatePricing() error {
-	if s.pricingService != nil {
-		return s.pricingService.ForceUpdate()
-	}
-	return fmt.Errorf("pricing service not initialized")
 }
 
 // ImagePriceConfig 图片计费配置

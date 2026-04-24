@@ -20,13 +20,19 @@ type BuildInfo struct {
 }
 
 // ProvidePricingService creates and initializes PricingService
-func ProvidePricingService(cfg *config.Config, remoteClient PricingRemoteClient) (*PricingService, error) {
-	svc := NewPricingService(cfg, remoteClient)
+// mkx: 去除 PricingRemoteClient 依赖，定价数据已在编译期嵌入二进制 (2026-04-24)
+func ProvidePricingService(cfg *config.Config, repo ModelPricingRepository) (*PricingService, error) {
+	svc := NewPricingService(cfg, repo)
 	if err := svc.Initialize(); err != nil {
 		// Pricing service initialization failure should not block startup, use fallback prices
 		println("[Service] Warning: Pricing service initialization failed:", err.Error())
 	}
 	return svc, nil
+}
+
+// ProvideModelPlazaService creates the user model plaza aggregation service.
+func ProvideModelPlazaService(apiKeySvc *APIKeyService, accountRepo AccountRepository, pricing *PricingService) *ModelPlazaService {
+	return NewModelPlazaService(apiKeySvc, accountRepo, pricing)
 }
 
 // ProvideUpdateService creates UpdateService with BuildInfo
@@ -401,6 +407,7 @@ var ProviderSet = wire.NewSet(
 	NewUsageService,
 	NewDashboardService,
 	ProvidePricingService,
+	ProvideModelPlazaService,
 	NewBillingService,
 	NewBillingCacheService,
 	NewAnnouncementService,

@@ -381,15 +381,7 @@ func TestGetPricingServiceStatus_NilService(t *testing.T) {
 
 	status := svc.GetPricingServiceStatus()
 	require.NotNil(t, status)
-	require.Equal(t, "using fallback", status["last_updated"])
-}
-
-func TestForceUpdatePricing_NilService(t *testing.T) {
-	svc := newTestBillingService()
-
-	err := svc.ForceUpdatePricing()
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "not initialized")
+	require.Equal(t, "fallback", status["source"])
 }
 
 func TestCalculateCostWithLongContext_PropagatesError(t *testing.T) {

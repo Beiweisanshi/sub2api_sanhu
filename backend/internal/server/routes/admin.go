@@ -88,6 +88,9 @@ func RegisterAdminRoutes(
 
 		// 渠道管理
 		registerChannelRoutes(admin, h)
+
+		// 模型定价管理
+		registerModelPricingRoutes(admin, h)
 	}
 }
 
@@ -550,6 +553,16 @@ func registerTLSFingerprintProfileRoutes(admin *gin.RouterGroup, h *handler.Hand
 		profiles.POST("", h.Admin.TLSFingerprintProfile.Create)
 		profiles.PUT("/:id", h.Admin.TLSFingerprintProfile.Update)
 		profiles.DELETE("/:id", h.Admin.TLSFingerprintProfile.Delete)
+	}
+}
+
+func registerModelPricingRoutes(admin *gin.RouterGroup, h *handler.Handlers) {
+	modelPricing := admin.Group("/model-pricing")
+	{
+		modelPricing.GET("", h.Admin.ModelPricing.List)
+		modelPricing.POST("", h.Admin.ModelPricing.Create)
+		modelPricing.PUT("/*name", h.Admin.ModelPricing.Upsert)
+		modelPricing.DELETE("/*name", h.Admin.ModelPricing.Delete)
 	}
 }
 
