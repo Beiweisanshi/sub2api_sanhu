@@ -178,16 +178,14 @@ func (s *RateLimitService) HandleUpstreamError(ctx context.Context, account *Acc
 			shouldDisable = true
 			break
 		}
-		// OpenAI: {"detail":"Unauthorized"} 表示 token 完全无效（非标准 OpenAI 错误格式），直接标记 error
-		if account.Platform == PlatformOpenAI && gjson.GetBytes(responseBody, "detail").String() == "Unauthorized" {
-			msg := "Unauthorized (401): account authentication failed permanently"
-			if upstreamMsg != "" {
-				msg = "Unauthorized (401): " + upstreamMsg
-			}
-			s.handleAuthError(ctx, account, msg)
-			shouldDisable = true
-			break
-		}
+		// 作者: mkx  变更: 2026/04/24
+		// 移除原先对 {"detail":"Unauthorized"} 的永久禁用分支：
+		// ChatGPT backend-api 的 401 + {"detail":"Unauthorized"} 并不代表 token 永久失效。
+		// 典型场景是 free 账号被 /v1/chat/completions 链路误触发（gpt-image-* 被默认
+		// 归一到 gpt-5.4 后走 chat 路径），账号本身 OAuth token 仍然有效，只是缺乏 chat
+		// 权限。旧分支会把整个 image 分组的 free 账号级联打穿。
+		// 现在让这类 401 走下面统一的 OAuth 401 路径：失效缓存 + 强制刷新 + 临时不可调度，
+		// 真正的永久吊销由上面的 token_invalidated/token_revoked 显式 code 兜底。
 		// OAuth 账号在 401 错误时临时不可调度（给 token 刷新窗口）；非 OAuth 账号保持原有 SetError 行为。
 		// Antigravity 除外：其 401 由 applyErrorPolicy 的 temp_unschedulable_rules 自行控制。
 		if account.Type == AccountTypeOAuth && account.Platform != PlatformAntigravity {

@@ -1,9 +1,61 @@
 package service
 
 import (
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 )
+
+// UnsupportedUpstreamModelError 作者: mkx  变更: 2026/04/24
+// 当 OAuth 账号的 model_mapping 不包含 gpt-5.4，且请求模型在 Codex 归一表里无法
+// 显式命中（否则会被兜底重写为 gpt-5.4）时，normalizeOpenAIModelForUpstream
+// 返回此错误。调用方应避免把请求发往上游——典型场景是客户端把 gpt-image-*
+// 发到 /v1/chat/completions，而选中的账号只有 image 权限，若放行会被 ChatGPT
+// 后端以 401 {"detail":"Unauthorized"} 拒绝并牵连到账号禁用逻辑。
+type UnsupportedUpstreamModelError struct {
+	RequestedModel string
+	FallbackModel  string
+	AccountID      int64
+	AccountName    string
+}
+
+func (e *UnsupportedUpstreamModelError) Error() string {
+	return fmt.Sprintf(
+		"model %q is not supported by account %d (%s): codex normalizer would fall back to %q but the account has no model_mapping entry for it",
+		e.RequestedModel, e.AccountID, e.AccountName, e.FallbackModel,
+	)
+}
+
+// IsUnsupportedUpstreamModelError 便于调用方识别此错误类型，无需 errors.As 到具体指针。
+func IsUnsupportedUpstreamModelError(err error) bool {
+	var target *UnsupportedUpstreamModelError
+	return errors.As(err, &target)
+}
+
+// resolveOpenAIUpstreamModelOrFailover 作者: mkx  变更: 2026/04/24
+// HTTP 路径统一用这个 helper：UnsupportedUpstreamModelError 被翻译成
+// UpstreamFailoverError{StatusCode:400}，让 handler 的 failover 循环把这个账号
+// 跳过去继续找别的（注意：HandleUpstreamError 不会被调用，所以账号零副作用）。
+// 如果整组都不支持，failover 耗尽后客户端拿到 400，诊断信息在 ResponseBody 里。
+func resolveOpenAIUpstreamModelOrFailover(account *Account, model string) (string, error) {
+	upstream, err := normalizeOpenAIModelForUpstream(account, model)
+	if err == nil {
+		return upstream, nil
+	}
+	var unsupported *UnsupportedUpstreamModelError
+	if errors.As(err, &unsupported) {
+		body := fmt.Sprintf(
+			`{"error":{"type":"invalid_request_error","code":"model_not_supported","message":%q}}`,
+			unsupported.Error(),
+		)
+		return "", &UpstreamFailoverError{
+			StatusCode:   http.StatusBadRequest,
+			ResponseBody: []byte(body),
+		}
+	}
+	return "", err
+}
 
 var codexModelMap = map[string]string{
 	"gpt-5.4":                    "gpt-5.4",
@@ -187,8 +239,21 @@ func applyCodexOAuthTransform(reqBody map[string]any, isCodexCLI bool, isCompact
 }
 
 func normalizeCodexModel(model string) string {
+	normalized, _ := normalizeCodexModelStrict(model)
+	return normalized
+}
+
+// normalizeCodexModelStrict 作者: mkx  变更: 2026/04/24
+// 返回归一后的 Codex 模型名与是否"显式命中"标志：
+//   - explicit=true  表示输入在 codexModelMap 或已知子串（gpt-5.3/5.4/codex 等）里匹配到；
+//   - explicit=false 表示兜底到 gpt-5.4 的默认值，调用方应据此决定是否拒绝。
+//
+// 将此信息回传是为了解决 image-only free 账号被 /v1/chat/completions 链路
+// 打穿的问题——旧的 normalizeCodexModel 在 explicit=false 时静默返回 "gpt-5.4"，
+// 导致上游把 chat 请求发给无 chat 权限的账号而失败。
+func normalizeCodexModelStrict(model string) (normalized string, explicit bool) {
 	if model == "" {
-		return "gpt-5.4"
+		return "gpt-5.4", false
 	}
 
 	modelID := model
@@ -198,44 +263,65 @@ func normalizeCodexModel(model string) string {
 	}
 
 	if mapped := getNormalizedCodexModel(modelID); mapped != "" {
-		return mapped
+		return mapped, true
 	}
 
-	normalized := strings.ToLower(modelID)
+	lower := strings.ToLower(modelID)
 
-	if strings.Contains(normalized, "gpt-5.4-mini") || strings.Contains(normalized, "gpt 5.4 mini") {
-		return "gpt-5.4-mini"
+	if strings.Contains(lower, "gpt-5.4-mini") || strings.Contains(lower, "gpt 5.4 mini") {
+		return "gpt-5.4-mini", true
 	}
-	if strings.Contains(normalized, "gpt-5.4") || strings.Contains(normalized, "gpt 5.4") {
-		return "gpt-5.4"
+	if strings.Contains(lower, "gpt-5.4") || strings.Contains(lower, "gpt 5.4") {
+		return "gpt-5.4", true
 	}
-	if strings.Contains(normalized, "gpt-5.2") || strings.Contains(normalized, "gpt 5.2") {
-		return "gpt-5.2"
+	if strings.Contains(lower, "gpt-5.2") || strings.Contains(lower, "gpt 5.2") {
+		return "gpt-5.2", true
 	}
-	if strings.Contains(normalized, "gpt-5.3-codex-spark") || strings.Contains(normalized, "gpt 5.3 codex spark") {
-		return "gpt-5.3-codex-spark"
+	if strings.Contains(lower, "gpt-5.3-codex-spark") || strings.Contains(lower, "gpt 5.3 codex spark") {
+		return "gpt-5.3-codex-spark", true
 	}
-	if strings.Contains(normalized, "gpt-5.3-codex") || strings.Contains(normalized, "gpt 5.3 codex") {
-		return "gpt-5.3-codex"
+	if strings.Contains(lower, "gpt-5.3-codex") || strings.Contains(lower, "gpt 5.3 codex") {
+		return "gpt-5.3-codex", true
 	}
-	if strings.Contains(normalized, "gpt-5.3") || strings.Contains(normalized, "gpt 5.3") {
-		return "gpt-5.3-codex"
+	if strings.Contains(lower, "gpt-5.3") || strings.Contains(lower, "gpt 5.3") {
+		return "gpt-5.3-codex", true
 	}
-	if strings.Contains(normalized, "codex") {
-		return "gpt-5.3-codex"
+	if strings.Contains(lower, "codex") {
+		return "gpt-5.3-codex", true
 	}
-	if strings.Contains(normalized, "gpt-5") || strings.Contains(normalized, "gpt 5") {
-		return "gpt-5.4"
+	if strings.Contains(lower, "gpt-5") || strings.Contains(lower, "gpt 5") {
+		return "gpt-5.4", true
 	}
 
-	return "gpt-5.4"
+	return "gpt-5.4", false
 }
 
-func normalizeOpenAIModelForUpstream(account *Account, model string) string {
-	if account == nil || account.Type == AccountTypeOAuth {
-		return normalizeCodexModel(model)
+// normalizeOpenAIModelForUpstream 作者: mkx  变更: 2026/04/24
+// OAuth 账号在"未显式命中 + 账号 model_mapping 不包含 gpt-5.4"时返回
+// *UnsupportedUpstreamModelError，调用方应将其视为不可重试的客户端错误（400），
+// 不要把请求打到上游，也不要让账号承担任何禁用/限流副作用。
+//
+// 其余情况（API Key 账号、账号无 mapping 即允许全部、显式命中的模型）
+// 保持与旧版相同的行为：返回归一后的上游模型名，err=nil。
+func normalizeOpenAIModelForUpstream(account *Account, model string) (string, error) {
+	if account == nil || account.Type != AccountTypeOAuth {
+		return strings.TrimSpace(model), nil
 	}
-	return strings.TrimSpace(model)
+
+	normalized, explicit := normalizeCodexModelStrict(model)
+	if explicit {
+		return normalized, nil
+	}
+	// 账号未配置 model_mapping 等同于"允许全部"，保持旧兜底行为。
+	if account.IsModelSupported("gpt-5.4") {
+		return normalized, nil
+	}
+	return "", &UnsupportedUpstreamModelError{
+		RequestedModel: model,
+		FallbackModel:  normalized,
+		AccountID:      account.ID,
+		AccountName:    account.Name,
+	}
 }
 
 func SupportsVerbosity(model string) bool {

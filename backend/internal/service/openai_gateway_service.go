@@ -1950,7 +1950,11 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	// 上游可识别的 Codex/GPT 系列。API Key 账号则应保留原始/映射后的模型名，
 	// 以兼容自定义 base_url 的 OpenAI-compatible 上游。
 	if model, ok := reqBody["model"].(string); ok {
-		upstreamModel = normalizeOpenAIModelForUpstream(account, model)
+		resolved, resolveErr := resolveOpenAIUpstreamModelOrFailover(account, model)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+		upstreamModel = resolved
 		if upstreamModel != "" && upstreamModel != model {
 			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Upstream model resolved: %s -> %s (account: %s, type: %s, isCodexCLI: %v)",
 				model, upstreamModel, account.Name, account.Type, isCodexCLI)

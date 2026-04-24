@@ -2515,7 +2515,16 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			}
 			normalized = next
 		}
-		upstreamModel := normalizeOpenAIModelForUpstream(account, account.GetMappedModel(originalModel))
+		upstreamModel, resolveErr := normalizeOpenAIModelForUpstream(account, account.GetMappedModel(originalModel))
+		if resolveErr != nil {
+			// 作者: mkx  变更: 2026/04/24
+			// 账号不支持 gpt-5.4 兜底时关闭连接，避免 WS 侧复现 chat cascade bug。
+			return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(
+				coderws.StatusPolicyViolation,
+				resolveErr.Error(),
+				resolveErr,
+			)
+		}
 		if upstreamModel != originalModel {
 			next, setErr := applyPayloadMutation(normalized, "model", upstreamModel)
 			if setErr != nil {
@@ -2773,7 +2782,18 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		mappedModel := ""
 		var mappedModelBytes []byte
 		if originalModel != "" {
-			mappedModel = normalizeOpenAIModelForUpstream(account, account.GetMappedModel(originalModel))
+			// 作者: mkx  变更: 2026/04/24
+			// 正常情况下入口校验（parseClientPayload 分支）已经拒绝了 UnsupportedUpstreamModelError，
+			// 走到这里仍拿到错误说明账号 / mapping 发生竞争变更，直接失败该 turn。
+			resolved, resolveErr := normalizeOpenAIModelForUpstream(account, account.GetMappedModel(originalModel))
+			if resolveErr != nil {
+				return nil, wrapOpenAIWSIngressTurnError(
+					"resolve_upstream_model",
+					resolveErr,
+					wroteDownstream,
+				)
+			}
+			mappedModel = resolved
 			needModelReplace = mappedModel != "" && mappedModel != originalModel
 			if needModelReplace {
 				mappedModelBytes = []byte(mappedModel)

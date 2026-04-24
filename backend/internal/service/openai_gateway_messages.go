@@ -62,7 +62,10 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 
 	// 3. Model mapping
 	billingModel := resolveOpenAIForwardModel(account, normalizedModel, defaultMappedModel)
-	upstreamModel := normalizeOpenAIModelForUpstream(account, billingModel)
+	upstreamModel, err := resolveOpenAIUpstreamModelOrFailover(account, billingModel)
+	if err != nil {
+		return nil, err
+	}
 	responsesReq.Model = upstreamModel
 
 	logger.L().Debug("openai messages: model mapping applied",

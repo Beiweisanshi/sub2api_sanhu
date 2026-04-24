@@ -142,6 +142,70 @@ func TestRateLimitService_HandleUpstreamError_NonOAuth401(t *testing.T) {
 	require.Empty(t, invalidator.accounts)
 }
 
+// TestRateLimitService_HandleUpstreamError_OpenAIOAuth401DetailUnauthorized
+// 作者: mkx  变更: 2026/04/24
+// 回归测试：ChatGPT backend-api 对 free / 无 chat 权限的账号返回
+// 401 {"detail":"Unauthorized"} 时，必须走 temp_unschedulable 路径，
+// 不能调 SetError 永久禁用。历史 bug：image 分组里的 free 账号因为
+// gpt-image-* 被默认归一到 gpt-5.4 触发 chat 请求，一次性被整组打穿。
+func TestRateLimitService_HandleUpstreamError_OpenAIOAuth401DetailUnauthorized(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	invalidator := &tokenCacheInvalidatorRecorder{}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	service.SetTokenCacheInvalidator(invalidator)
+	account := &Account{
+		ID:       104,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+		Credentials: map[string]any{
+			"access_token": "token",
+		},
+	}
+
+	shouldDisable := service.HandleUpstreamError(
+		context.Background(),
+		account,
+		401,
+		http.Header{},
+		[]byte(`{"detail":"Unauthorized"}`),
+	)
+
+	require.True(t, shouldDisable)
+	require.Equal(t, 0, repo.setErrorCalls, "detail==Unauthorized 不应调 SetError 永久禁用")
+	require.Equal(t, 1, repo.tempCalls, "detail==Unauthorized 应走 temp_unschedulable")
+	require.Equal(t, 1, repo.updateCredentialsCalls, "应强制 expires_at=now 触发下次刷新")
+	require.Len(t, invalidator.accounts, 1, "应失效 token 缓存")
+}
+
+// TestRateLimitService_HandleUpstreamError_OpenAIOAuth401TokenRevokedStillPermanent
+// 作者: mkx  变更: 2026/04/24
+// 与上个测试配对：带显式 code=token_invalidated/token_revoked 的 401 仍应永久禁用，
+// 避免修复过头把真正吊销的 token 也降级到冷却队列里。
+func TestRateLimitService_HandleUpstreamError_OpenAIOAuth401TokenRevokedStillPermanent(t *testing.T) {
+	repo := &rateLimitAccountRepoStub{}
+	invalidator := &tokenCacheInvalidatorRecorder{}
+	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
+	service.SetTokenCacheInvalidator(invalidator)
+	account := &Account{
+		ID:       105,
+		Platform: PlatformOpenAI,
+		Type:     AccountTypeOAuth,
+	}
+
+	body := []byte(`{"error":{"code":"token_invalidated","message":"Your authentication token has been invalidated."}}`)
+	shouldDisable := service.HandleUpstreamError(
+		context.Background(),
+		account,
+		401,
+		http.Header{},
+		body,
+	)
+
+	require.True(t, shouldDisable)
+	require.Equal(t, 1, repo.setErrorCalls, "token_invalidated 必须走 SetError 永久禁用")
+	require.Equal(t, 0, repo.tempCalls)
+}
+
 func TestRateLimitService_HandleUpstreamError_OAuth401UsesCredentialsUpdater(t *testing.T) {
 	repo := &rateLimitAccountRepoStub{}
 	service := NewRateLimitService(repo, nil, &config.Config{}, nil, nil)
