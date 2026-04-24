@@ -45,12 +45,12 @@ const (
 	openAIImagesGenerationsURL = "https://api.openai.com/v1/images/generations"
 	openAIImagesEditsURL       = "https://api.openai.com/v1/images/edits"
 
-	openAIChatGPTStartURL             = "https://chatgpt.com/"
-	openAIChatGPTFilesURL             = "https://chatgpt.com/backend-api/files"
-	openAIChatGPTFilesProcessURL      = "https://chatgpt.com/backend-api/files/process_upload_stream"
-	openAIChatGPTConversationURL      = "https://chatgpt.com/backend-api/conversation"
-	openAIChatGPTChatRequirementsURL  = "https://chatgpt.com/backend-api/sentinel/chat-requirements"
-	openAIChatGPTSentinelSDKURL       = "https://chatgpt.com/backend-api/sentinel/sdk.js"
+	openAIChatGPTStartURL            = "https://chatgpt.com/"
+	openAIChatGPTFilesURL            = "https://chatgpt.com/backend-api/files"
+	openAIChatGPTFilesProcessURL     = "https://chatgpt.com/backend-api/files/process_upload_stream"
+	openAIChatGPTConversationURL     = "https://chatgpt.com/backend-api/conversation"
+	openAIChatGPTChatRequirementsURL = "https://chatgpt.com/backend-api/sentinel/chat-requirements"
+	openAIChatGPTSentinelSDKURL      = "https://chatgpt.com/backend-api/sentinel/sdk.js"
 
 	// 作者: mkx  变更: 2026/04/23 - UA 版本对齐 req/v3 的 ImpersonateChrome (Chrome 120)，
 	// 避免 JA3 指纹和 UA 版本号不自洽触发 Cloudflare 挑战
@@ -441,31 +441,46 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 	if err != nil {
 		return nil, err
 	}
-	upstreamReq, err := s.buildOpenAIImagesRequest(ctx, c, account, forwardBody, forwardContentType, token, parsed.Endpoint)
-	if err != nil {
-		return nil, err
-	}
-
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
-	upstreamStart := time.Now()
-	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
-	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
-	if err != nil {
-		safeErr := sanitizeUpstreamErrorMessage(err.Error())
+
+	var resp *http.Response
+	upstreamURL := ""
+	retryStart := time.Now()
+	for attempt := 1; attempt <= maxRetryAttempts; attempt++ {
+		upstreamReq, err := s.buildOpenAIImagesRequest(ctx, c, account, forwardBody, forwardContentType, token, parsed.Endpoint)
+		if err != nil {
+			return nil, err
+		}
+		upstreamURL = upstreamReq.URL.String()
+
+		upstreamStart := time.Now()
+		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+		if err == nil {
+			break
+		}
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		if delay, ok := nextUpstreamRequestRetryDelay(ctx, attempt, retryStart); ok {
+			safeErr := appendOpsUpstreamRequestError(c, account, upstreamReq.URL.String(), false, "request_retry", err)
+			logger.LegacyPrintf("service.openai_images", "account %d: upstream image request failed, retry %d/%d after %v: %s",
+				account.ID, attempt, maxRetryAttempts, delay, safeErr)
+			if err := sleepWithContext(ctx, delay); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		safeErr := appendOpsUpstreamRequestError(c, account, upstreamReq.URL.String(), false, "request_error", err)
 		setOpsUpstreamError(c, 0, safeErr, "")
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-			Platform:           account.Platform,
-			AccountID:          account.ID,
-			AccountName:        account.Name,
-			UpstreamStatusCode: 0,
-			UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
-			Kind:               "request_error",
-			Message:            safeErr,
-		})
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+	}
+	if resp == nil || resp.Body == nil {
+		return nil, errors.New("upstream request failed: empty response")
 	}
 	if resp.StatusCode >= 400 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
@@ -480,7 +495,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 				AccountName:        account.Name,
 				UpstreamStatusCode: resp.StatusCode,
 				UpstreamRequestID:  resp.Header.Get("x-request-id"),
-				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
+				UpstreamURL:        safeUpstreamURL(upstreamURL),
 				Kind:               "failover",
 				Message:            upstreamMsg,
 			})
@@ -2112,24 +2127,24 @@ func buildOpenAIPowConfig(userAgent string) []any {
 	perf := openAIPowPerfCounterMS()
 	nowMS := float64(time.Now().UnixMilli())
 	return []any{
-		openAIPowScreenSums[rand.IntN(len(openAIPowScreenSums))],                          // 1
-		openAIPowParseTime(),                                                              // 2
-		4294705152,                                                                        // 3
-		0,                                                                                 // 4
+		openAIPowScreenSums[rand.IntN(len(openAIPowScreenSums))], // 1
+		openAIPowParseTime(), // 2
+		4294705152,           // 3
+		0,                    // 4
 		coalesceOpenAIFileName(strings.TrimSpace(userAgent), openAIImageBackendUserAgent), // 5
-		scriptSrc,                          // 6
-		fp.dpl,                             // 7
-		"en-US",                            // 8
-		"en-US,es-US,en,es",                // 9
-		0,                                  // 10
-		pick(openAIPowNavigatorKeys),       // 11
-		pick(openAIPowDocumentKeys),        // 12
-		pick(openAIPowWindowKeys),          // 13
-		perf,                               // 14
-		uuid.NewString(),                   // 15
-		"",                                 // 16
+		scriptSrc,                    // 6
+		fp.dpl,                       // 7
+		"en-US",                      // 8
+		"en-US,es-US,en,es",          // 9
+		0,                            // 10
+		pick(openAIPowNavigatorKeys), // 11
+		pick(openAIPowDocumentKeys),  // 12
+		pick(openAIPowWindowKeys),    // 13
+		perf,                         // 14
+		uuid.NewString(),             // 15
+		"",                           // 16
 		openAIPowCores[rand.IntN(len(openAIPowCores))], // 17
-		nowMS - perf,                       // 18
+		nowMS - perf, // 18
 	}
 }
 

@@ -108,32 +108,42 @@ func (s *GatewayService) ForwardAsResponses(
 		proxyURL = account.Proxy.URL()
 	}
 
-	// 10. Build upstream request
-	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
-	upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, anthropicBody, token, tokenType, mappedModel, reqStream, shouldMimicClaudeCode)
-	releaseUpstreamCtx()
-	if err != nil {
-		return nil, fmt.Errorf("build upstream request: %w", err)
-	}
+	// 10-11. Build and send upstream request. Transport-level failures are retried
+	// before returning the generic upstream request error to the client.
+	var resp *http.Response
+	retryStart := time.Now()
+	for attempt := 1; attempt <= maxRetryAttempts; attempt++ {
+		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
+		upstreamReq, err := s.buildUpstreamRequest(upstreamCtx, c, account, anthropicBody, token, tokenType, mappedModel, reqStream, shouldMimicClaudeCode)
+		releaseUpstreamCtx()
+		if err != nil {
+			return nil, fmt.Errorf("build upstream request: %w", err)
+		}
 
-	// 11. Send request
-	resp, err := s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
-	if err != nil {
+		resp, err = s.httpUpstream.DoWithTLS(upstreamReq, proxyURL, account.ID, account.Concurrency, s.tlsFPProfileService.ResolveTLSProfile(account))
+		if err == nil {
+			break
+		}
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}
-		safeErr := sanitizeUpstreamErrorMessage(err.Error())
+		if delay, ok := nextUpstreamRequestRetryDelay(ctx, attempt, retryStart); ok {
+			safeErr := appendOpsUpstreamRequestError(c, account, upstreamReq.URL.String(), false, "request_retry", err)
+			logger.LegacyPrintf("service.gateway", "[Responses compat] account %d: upstream request failed, retry %d/%d after %v: %s",
+				account.ID, attempt, maxRetryAttempts, delay, safeErr)
+			if err := sleepWithContext(ctx, delay); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		safeErr := appendOpsUpstreamRequestError(c, account, upstreamReq.URL.String(), false, "request_error", err)
 		setOpsUpstreamError(c, 0, safeErr, "")
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-			Platform:           account.Platform,
-			AccountID:          account.ID,
-			AccountName:        account.Name,
-			UpstreamStatusCode: 0,
-			Kind:               "request_error",
-			Message:            safeErr,
-		})
 		writeResponsesError(c, http.StatusBadGateway, "server_error", "Upstream request failed")
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+	}
+	if resp == nil || resp.Body == nil {
+		return nil, errors.New("upstream request failed: empty response")
 	}
 	defer func() { _ = resp.Body.Close() }()
 

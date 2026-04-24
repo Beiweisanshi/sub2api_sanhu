@@ -1972,6 +1972,23 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		}
 	}
 
+	// 作者: mkx  变更: 2026/04/24
+	// 从模型后缀派生 reasoning.effort 并注入请求体（如 gpt-5.5-high → reasoning.effort="high"）。
+	// 仅当请求体中未显式指定 reasoning.effort 时生效，防止覆盖客户端意图。
+	if _, hasEffort := getOpenAIReasoningEffortFromReqBody(reqBody); !hasEffort {
+		if derivedEffort := deriveOpenAIReasoningEffortFromModel(originalModel); derivedEffort != "" {
+			reasoning, _ := reqBody["reasoning"].(map[string]any)
+			if reasoning == nil {
+				reasoning = map[string]any{}
+				reqBody["reasoning"] = reasoning
+			}
+			reasoning["effort"] = derivedEffort
+			bodyModified = true
+			disablePatch()
+			logger.LegacyPrintf("service.openai_gateway", "[OpenAI] Injected reasoning.effort from model suffix: %s -> %s (account: %s)", originalModel, derivedEffort, account.Name)
+		}
+	}
+
 	// 规范化 reasoning.effort 参数（minimal -> none），与上游允许值对齐。
 	if reasoning, ok := reqBody["reasoning"].(map[string]any); ok {
 		if effort, ok := reasoning["effort"].(string); ok && effort == "minimal" {
@@ -2309,6 +2326,8 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 
 	httpInvalidEncryptedContentRetryTried := false
+	transportAttempt := 1
+	transportRetryStart := time.Now()
 	for {
 		// Build upstream request
 		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
@@ -2330,16 +2349,19 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
 		if err != nil {
 			// Ensure the client receives an error response (handlers assume Forward writes on non-failover errors).
-			safeErr := sanitizeUpstreamErrorMessage(err.Error())
+			if delay, ok := nextUpstreamRequestRetryDelay(ctx, transportAttempt, transportRetryStart); ok {
+				safeErr := appendOpsUpstreamRequestError(c, account, upstreamReq.URL.String(), false, "request_retry", err)
+				logger.LegacyPrintf("service.openai_gateway", "[OpenAI] account %d: upstream request failed, retry %d/%d after %v: %s",
+					account.ID, transportAttempt, maxRetryAttempts, delay, safeErr)
+				transportAttempt++
+				if err := sleepWithContext(ctx, delay); err != nil {
+					return nil, err
+				}
+				continue
+			}
+
+			safeErr := appendOpsUpstreamRequestError(c, account, upstreamReq.URL.String(), false, "request_error", err)
 			setOpsUpstreamError(c, 0, safeErr, "")
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-				Platform:           account.Platform,
-				AccountID:          account.ID,
-				AccountName:        account.Name,
-				UpstreamStatusCode: 0,
-				Kind:               "request_error",
-				Message:            safeErr,
-			})
 			c.JSON(http.StatusBadGateway, gin.H{
 				"error": gin.H{
 					"type":    "upstream_error",
@@ -2529,13 +2551,6 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		return nil, err
 	}
 
-	upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
-	upstreamReq, err := s.buildUpstreamRequestOpenAIPassthrough(upstreamCtx, c, account, body, token)
-	releaseUpstreamCtx()
-	if err != nil {
-		return nil, err
-	}
-
 	proxyURL := ""
 	if account.ProxyID != nil && account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
@@ -2546,21 +2561,37 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 		c.Set("openai_passthrough", true)
 	}
 
-	upstreamStart := time.Now()
-	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
-	SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
-	if err != nil {
-		safeErr := sanitizeUpstreamErrorMessage(err.Error())
+	var resp *http.Response
+	retryStart := time.Now()
+	for attempt := 1; attempt <= maxRetryAttempts; attempt++ {
+		upstreamCtx, releaseUpstreamCtx := detachStreamUpstreamContext(ctx, reqStream)
+		upstreamReq, err := s.buildUpstreamRequestOpenAIPassthrough(upstreamCtx, c, account, body, token)
+		releaseUpstreamCtx()
+		if err != nil {
+			return nil, err
+		}
+
+		upstreamStart := time.Now()
+		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+		SetOpsLatencyMs(c, OpsUpstreamLatencyMsKey, time.Since(upstreamStart).Milliseconds())
+		if err == nil {
+			break
+		}
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		if delay, ok := nextUpstreamRequestRetryDelay(ctx, attempt, retryStart); ok {
+			safeErr := appendOpsUpstreamRequestError(c, account, upstreamReq.URL.String(), true, "request_retry", err)
+			logger.LegacyPrintf("service.openai_gateway", "[OpenAI passthrough] account %d: upstream request failed, retry %d/%d after %v: %s",
+				account.ID, attempt, maxRetryAttempts, delay, safeErr)
+			if err := sleepWithContext(ctx, delay); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		safeErr := appendOpsUpstreamRequestError(c, account, upstreamReq.URL.String(), true, "request_error", err)
 		setOpsUpstreamError(c, 0, safeErr, "")
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-			Platform:           account.Platform,
-			AccountID:          account.ID,
-			AccountName:        account.Name,
-			UpstreamStatusCode: 0,
-			Passthrough:        true,
-			Kind:               "request_error",
-			Message:            safeErr,
-		})
 		c.JSON(http.StatusBadGateway, gin.H{
 			"error": gin.H{
 				"type":    "upstream_error",
@@ -2568,6 +2599,9 @@ func (s *OpenAIGatewayService) forwardOpenAIPassthrough(
 			},
 		})
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+	}
+	if resp == nil || resp.Body == nil {
+		return nil, errors.New("upstream request failed: empty response")
 	}
 	defer func() { _ = resp.Body.Close() }()
 

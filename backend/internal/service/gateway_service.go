@@ -3625,7 +3625,7 @@ func (s *GatewayService) getOAuthToken(ctx context.Context, account *Account) (s
 // 重试相关常量
 const (
 	// 最大尝试次数（包含首次请求）。过多重试会导致请求堆积与资源耗尽。
-	maxRetryAttempts = 5
+	maxRetryAttempts = 3
 
 	// 指数退避：第 N 次失败后的等待 = retryBaseDelay * 2^(N-1)，并且上限为 retryMaxDelay。
 	retryBaseDelay = 300 * time.Millisecond
@@ -3666,6 +3666,44 @@ func retryBackoffDelay(attempt int) time.Duration {
 		return retryMaxDelay
 	}
 	return delay
+}
+
+func nextUpstreamRequestRetryDelay(ctx context.Context, attempt int, retryStart time.Time) (time.Duration, bool) {
+	if ctx != nil && ctx.Err() != nil {
+		return 0, false
+	}
+	if attempt >= maxRetryAttempts {
+		return 0, false
+	}
+	elapsed := time.Since(retryStart)
+	if elapsed >= maxRetryElapsed {
+		return 0, false
+	}
+
+	delay := retryBackoffDelay(attempt)
+	remaining := maxRetryElapsed - elapsed
+	if delay > remaining {
+		delay = remaining
+	}
+	return delay, delay > 0
+}
+
+func appendOpsUpstreamRequestError(c *gin.Context, account *Account, upstreamURL string, passthrough bool, kind string, err error) string {
+	safeErr := ""
+	if err != nil {
+		safeErr = sanitizeUpstreamErrorMessage(err.Error())
+	}
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		Platform:           account.Platform,
+		AccountID:          account.ID,
+		AccountName:        account.Name,
+		UpstreamStatusCode: 0,
+		UpstreamURL:        safeUpstreamURL(upstreamURL),
+		Passthrough:        passthrough,
+		Kind:               kind,
+		Message:            safeErr,
+	})
+	return safeErr
 }
 
 func sleepWithContext(ctx context.Context, d time.Duration) error {
@@ -4228,18 +4266,19 @@ func (s *GatewayService) Forward(ctx context.Context, c *gin.Context, account *A
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
 			}
+			if delay, ok := nextUpstreamRequestRetryDelay(ctx, attempt, retryStart); ok {
+				safeErr := appendOpsUpstreamRequestError(c, account, upstreamReq.URL.String(), false, "request_retry", err)
+				logger.LegacyPrintf("service.gateway", "Account %d: upstream request failed, retry %d/%d after %v: %s",
+					account.ID, attempt, maxRetryAttempts, delay, safeErr)
+				if err := sleepWithContext(ctx, delay); err != nil {
+					return nil, err
+				}
+				continue
+			}
+
 			// Ensure the client receives an error response (handlers assume Forward writes on non-failover errors).
-			safeErr := sanitizeUpstreamErrorMessage(err.Error())
+			safeErr := appendOpsUpstreamRequestError(c, account, upstreamReq.URL.String(), false, "request_error", err)
 			setOpsUpstreamError(c, 0, safeErr, "")
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-				Platform:           account.Platform,
-				AccountID:          account.ID,
-				AccountName:        account.Name,
-				UpstreamStatusCode: 0,
-				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
-				Kind:               "request_error",
-				Message:            safeErr,
-			})
 			c.JSON(http.StatusBadGateway, gin.H{
 				"type": "error",
 				"error": gin.H{
@@ -4715,18 +4754,18 @@ func (s *GatewayService) forwardAnthropicAPIKeyPassthroughWithInput(
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
 			}
-			safeErr := sanitizeUpstreamErrorMessage(err.Error())
+			if delay, ok := nextUpstreamRequestRetryDelay(ctx, attempt, retryStart); ok {
+				safeErr := appendOpsUpstreamRequestError(c, account, upstreamReq.URL.String(), true, "request_retry", err)
+				logger.LegacyPrintf("service.gateway", "Anthropic passthrough account %d: upstream request failed, retry %d/%d after %v: %s",
+					account.ID, attempt, maxRetryAttempts, delay, safeErr)
+				if err := sleepWithContext(ctx, delay); err != nil {
+					return nil, err
+				}
+				continue
+			}
+
+			safeErr := appendOpsUpstreamRequestError(c, account, upstreamReq.URL.String(), true, "request_error", err)
 			setOpsUpstreamError(c, 0, safeErr, "")
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-				Platform:           account.Platform,
-				AccountID:          account.ID,
-				AccountName:        account.Name,
-				UpstreamStatusCode: 0,
-				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
-				Passthrough:        true,
-				Kind:               "request_error",
-				Message:            safeErr,
-			})
 			c.JSON(http.StatusBadGateway, gin.H{
 				"type": "error",
 				"error": gin.H{
@@ -5282,15 +5321,15 @@ func writeAnthropicPassthroughResponseHeaders(dst http.Header, src http.Header, 
 // responseBlockedHeaders 透传模式响应侧需屏蔽的 hop-by-hop 头部。
 // content-length 由 Go ResponseWriter 自动管理，不应手动设置。
 var responseBlockedHeaders = map[string]bool{
-	"connection":        true,
-	"keep-alive":        true,
-	"proxy-authenticate": true,
+	"connection":          true,
+	"keep-alive":          true,
+	"proxy-authenticate":  true,
 	"proxy-authorization": true,
-	"te":                true,
-	"trailer":           true,
-	"transfer-encoding": true,
-	"upgrade":           true,
-	"content-length":    true,
+	"te":                  true,
+	"trailer":             true,
+	"transfer-encoding":   true,
+	"upgrade":             true,
+	"content-length":      true,
 }
 
 // writeAllUpstreamResponseHeaders 透传模式：上游响应头原样回写，仅跳过 hop-by-hop 头部。
@@ -5461,17 +5500,18 @@ func (s *GatewayService) executeBedrockUpstream(
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
 			}
-			safeErr := sanitizeUpstreamErrorMessage(err.Error())
+			if delay, ok := nextUpstreamRequestRetryDelay(ctx, attempt, retryStart); ok {
+				safeErr := appendOpsUpstreamRequestError(c, account, upstreamReq.URL.String(), false, "request_retry", err)
+				logger.LegacyPrintf("service.gateway", "[Bedrock] account %d: upstream request failed, retry %d/%d after %v: %s",
+					account.ID, attempt, maxRetryAttempts, delay, safeErr)
+				if err := sleepWithContext(ctx, delay); err != nil {
+					return nil, err
+				}
+				continue
+			}
+
+			safeErr := appendOpsUpstreamRequestError(c, account, upstreamReq.URL.String(), false, "request_error", err)
 			setOpsUpstreamError(c, 0, safeErr, "")
-			appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-				Platform:           account.Platform,
-				AccountID:          account.ID,
-				AccountName:        account.Name,
-				UpstreamStatusCode: 0,
-				UpstreamURL:        safeUpstreamURL(upstreamReq.URL.String()),
-				Kind:               "request_error",
-				Message:            safeErr,
-			})
 			c.JSON(http.StatusBadGateway, gin.H{
 				"type": "error",
 				"error": gin.H{

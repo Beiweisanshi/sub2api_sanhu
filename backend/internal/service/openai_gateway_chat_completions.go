@@ -187,35 +187,48 @@ func (s *OpenAIGatewayService) ForwardAsChatCompletions(
 		return nil, fmt.Errorf("get access token: %w", err)
 	}
 
-	// 6. Build upstream request
-	upstreamReq, err := s.buildUpstreamRequest(ctx, c, account, responsesBody, token, true, promptCacheKey, false)
-	if err != nil {
-		return nil, fmt.Errorf("build upstream request: %w", err)
-	}
-
-	if promptCacheKey != "" {
-		upstreamReq.Header.Set("session_id", generateSessionUUID(promptCacheKey))
-	}
-
-	// 7. Send request
 	proxyURL := ""
 	if account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
-	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
-	if err != nil {
-		safeErr := sanitizeUpstreamErrorMessage(err.Error())
+
+	// 6-7. Build and send upstream request. Rebuild on retry because request
+	// bodies are one-shot readers after http.Client.Do.
+	var resp *http.Response
+	retryStart := time.Now()
+	for attempt := 1; attempt <= maxRetryAttempts; attempt++ {
+		upstreamReq, err := s.buildUpstreamRequest(ctx, c, account, responsesBody, token, true, promptCacheKey, false)
+		if err != nil {
+			return nil, fmt.Errorf("build upstream request: %w", err)
+		}
+		if promptCacheKey != "" {
+			upstreamReq.Header.Set("session_id", generateSessionUUID(promptCacheKey))
+		}
+
+		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+		if err == nil {
+			break
+		}
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		if delay, ok := nextUpstreamRequestRetryDelay(ctx, attempt, retryStart); ok {
+			safeErr := appendOpsUpstreamRequestError(c, account, upstreamReq.URL.String(), false, "request_retry", err)
+			logger.LegacyPrintf("service.openai_gateway", "[ChatCompletions bridge] account %d: upstream request failed, retry %d/%d after %v: %s",
+				account.ID, attempt, maxRetryAttempts, delay, safeErr)
+			if err := sleepWithContext(ctx, delay); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		safeErr := appendOpsUpstreamRequestError(c, account, upstreamReq.URL.String(), false, "request_error", err)
 		setOpsUpstreamError(c, 0, safeErr, "")
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-			Platform:           account.Platform,
-			AccountID:          account.ID,
-			AccountName:        account.Name,
-			UpstreamStatusCode: 0,
-			Kind:               "request_error",
-			Message:            safeErr,
-		})
 		writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+	}
+	if resp == nil || resp.Body == nil {
+		return nil, errors.New("upstream request failed: empty response")
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -700,31 +713,45 @@ func (s *OpenAIGatewayService) forwardChatCompletionsNative(
 		return nil, fmt.Errorf("get access token: %w", err)
 	}
 
-	// 4. 组装上游请求
-	upstreamReq, err := s.buildUpstreamRequestChatCompletionsNative(ctx, c, account, upstreamBody, token)
-	if err != nil {
-		return nil, fmt.Errorf("build upstream request: %w", err)
-	}
-
-	// 5. 发起上游请求
 	proxyURL := ""
 	if account.Proxy != nil {
 		proxyURL = account.Proxy.URL()
 	}
-	resp, err := s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
-	if err != nil {
-		safeErr := sanitizeUpstreamErrorMessage(err.Error())
+
+	// 4-5. 组装并发起上游请求。网络/代理类传输错误会退避重试；
+	// 每次重试都重建请求，避免复用已消费的 Body。
+	var resp *http.Response
+	retryStart := time.Now()
+	for attempt := 1; attempt <= maxRetryAttempts; attempt++ {
+		upstreamReq, err := s.buildUpstreamRequestChatCompletionsNative(ctx, c, account, upstreamBody, token)
+		if err != nil {
+			return nil, fmt.Errorf("build upstream request: %w", err)
+		}
+
+		resp, err = s.httpUpstream.Do(upstreamReq, proxyURL, account.ID, account.Concurrency)
+		if err == nil {
+			break
+		}
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		if delay, ok := nextUpstreamRequestRetryDelay(ctx, attempt, retryStart); ok {
+			safeErr := appendOpsUpstreamRequestError(c, account, upstreamReq.URL.String(), false, "request_retry", err)
+			logger.LegacyPrintf("service.openai_gateway", "[ChatCompletions native] account %d: upstream request failed, retry %d/%d after %v: %s",
+				account.ID, attempt, maxRetryAttempts, delay, safeErr)
+			if err := sleepWithContext(ctx, delay); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		safeErr := appendOpsUpstreamRequestError(c, account, upstreamReq.URL.String(), false, "request_error", err)
 		setOpsUpstreamError(c, 0, safeErr, "")
-		appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
-			Platform:           account.Platform,
-			AccountID:          account.ID,
-			AccountName:        account.Name,
-			UpstreamStatusCode: 0,
-			Kind:               "request_error",
-			Message:            safeErr,
-		})
 		writeChatCompletionsError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed")
 		return nil, fmt.Errorf("upstream request failed: %s", safeErr)
+	}
+	if resp == nil || resp.Body == nil {
+		return nil, errors.New("upstream request failed: empty response")
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -776,6 +803,11 @@ func (s *OpenAIGatewayService) forwardChatCompletionsNative(
 	// 透出计费需要的服务等级 / 推理强度字段（老路径由 ResponsesRequest 回填）
 	serviceTier := extractOpenAIServiceTierFromBody(body)
 	reasoningEffort := extractCCReasoningEffortFromBody(body)
+	if reasoningEffort == nil {
+		if derived := deriveOpenAIReasoningEffortFromModel(originalModel); derived != "" {
+			reasoningEffort = &derived
+		}
+	}
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
 	}

@@ -22,10 +22,13 @@ import (
 )
 
 type anthropicHTTPUpstreamRecorder struct {
-	lastReq  *http.Request
-	lastBody []byte
-	resp     *http.Response
-	err      error
+	lastReq   *http.Request
+	lastBody  []byte
+	resp      *http.Response
+	responses []*http.Response
+	err       error
+	errors    []error
+	calls     int
 }
 
 func newAnthropicAPIKeyAccountForTest() *Account {
@@ -48,6 +51,7 @@ func newAnthropicAPIKeyAccountForTest() *Account {
 }
 
 func (u *anthropicHTTPUpstreamRecorder) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
+	u.calls++
 	u.lastReq = req
 	if req != nil && req.Body != nil {
 		b, _ := io.ReadAll(req.Body)
@@ -57,6 +61,18 @@ func (u *anthropicHTTPUpstreamRecorder) Do(req *http.Request, proxyURL string, a
 	}
 	if u.err != nil {
 		return nil, u.err
+	}
+	if len(u.errors) > 0 {
+		err := u.errors[0]
+		u.errors = u.errors[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(u.responses) > 0 {
+		resp := u.responses[0]
+		u.responses = u.responses[1:]
+		return resp, nil
 	}
 	return u.resp, nil
 }
@@ -905,7 +921,9 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_UpstreamRequest
 	}
 	account := newAnthropicAPIKeyAccountForTest()
 
-	result, err := svc.forwardAnthropicAPIKeyPassthrough(context.Background(), c, account, []byte(`{"model":"x"}`), "x", "x", false, time.Now())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, err := svc.forwardAnthropicAPIKeyPassthrough(ctx, c, account, []byte(`{"model":"x"}`), "x", "x", false, time.Now())
 	require.Nil(t, result)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "upstream request failed")
@@ -914,6 +932,41 @@ func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_UpstreamRequest
 	require.True(t, ok)
 	_, ok = rawBody.([]byte)
 	require.True(t, ok)
+}
+
+func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_UpstreamRequestErrorRetrySuccess(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/messages", nil)
+
+	upstreamJSON := `{"id":"msg_1","type":"message","usage":{"input_tokens":12,"output_tokens":7}}`
+	upstream := &anthropicHTTPUpstreamRecorder{
+		errors: []error{errors.New("dial tcp timeout")},
+		responses: []*http.Response{
+			{
+				StatusCode: http.StatusOK,
+				Header: http.Header{
+					"Content-Type": []string{"application/json"},
+					"x-request-id": []string{"rid-retry-ok"},
+				},
+				Body: io.NopCloser(strings.NewReader(upstreamJSON)),
+			},
+		},
+	}
+	svc := &GatewayService{
+		cfg:              &config.Config{},
+		httpUpstream:     upstream,
+		rateLimitService: &RateLimitService{},
+	}
+
+	result, err := svc.forwardAnthropicAPIKeyPassthrough(context.Background(), c, newAnthropicAPIKeyAccountForTest(), []byte(`{"model":"x"}`), "x", "x", false, time.Now())
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.Equal(t, 2, upstream.calls)
+	require.Equal(t, 12, result.Usage.InputTokens)
+	require.Equal(t, 7, result.Usage.OutputTokens)
+	require.Equal(t, upstreamJSON, rec.Body.String())
 }
 
 func TestGatewayService_AnthropicAPIKeyPassthrough_ForwardDirect_EmptyResponseBody(t *testing.T) {
