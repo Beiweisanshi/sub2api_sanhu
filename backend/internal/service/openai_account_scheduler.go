@@ -42,16 +42,17 @@ var openAIAdvancedSchedulerSettingSF singleflight.Group
 // 作为同优先级组内的排序偏好（支持该能力的账号优先，比如 apikey 在前、OAuth 降级兜底）。
 // 只有同组 apikey 全部 fresh/recheck 失败时，才在同组降级到 OAuth，而不是跨优先级找更低 priority 的 apikey。
 type OpenAIAccountScheduleRequest struct {
-	GroupID                  *int64
-	SessionHash              string
-	StickyAccountID          int64
-	PreviousResponseID       string
-	RequestedModel           string
-	RequiredTransport        OpenAIUpstreamTransport
-	RequiredImageCapability  OpenAIImagesCapability
-	PreferredImageCapability OpenAIImagesCapability
-	RequireCompact           bool
-	ExcludedIDs              map[int64]struct{}
+	GroupID                   *int64
+	SessionHash               string
+	StickyAccountID           int64
+	PreviousResponseID        string
+	RequestedModel            string
+	RequiredTransport         OpenAIUpstreamTransport
+	RequiredImageCapability   OpenAIImagesCapability
+	PreferredImageCapability  OpenAIImagesCapability
+	RequireCompact            bool
+	ExcludeFullAccountsNoWait bool
+	ExcludedIDs               map[int64]struct{}
 }
 
 type OpenAIAccountScheduleDecision struct {
@@ -896,8 +897,8 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 	}
 
 	// 依次尝试各优先级组，组内按权重概率选择。
-	// 只有当前组所有账号均无法通过 freshCheck+dbRecheck 时，才降级到下一组。
-	// 只要有账号通过双重检查（即使并发槽已满），就在当前组返回 WaitPlan，不再降级。
+	// 默认语义：只要当前组有账号通过双重检查（即使并发槽已满），就在当前组返回 WaitPlan，不再降级。
+	// 图片请求会设置 ExcludeFullAccountsNoWait：并发满的账号本轮直接跳过，继续尝试其他账号。
 	// 作者: mkx  变更: 2026/04/23 - 组内按 PreferredImageCapability 分层
 	// 分层逻辑：若请求带了 preferred capability（如 native），把组内候选拆成
 	// [支持 preferred 的] + [仅支持 required 的] 两层，前者先试，后者作为组内降级。
@@ -922,11 +923,6 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 					compactBlocked = true
 					continue
 				}
-				// 账号通过双重检查，可作为 WaitPlan 候选。
-				anyTrulySchedulable = true
-				if waitPlanCandidate == nil {
-					waitPlanCandidate = fresh
-				}
 				result, acquireErr := s.service.tryAcquireAccountSlot(ctx, fresh.ID, fresh.Concurrency)
 				if acquireErr != nil {
 					return nil, acquireErr
@@ -940,6 +936,14 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 						Acquired:    true,
 						ReleaseFunc: result.ReleaseFunc,
 					}, nil
+				}
+				if req.ExcludeFullAccountsNoWait {
+					continue
+				}
+				// 账号通过双重检查但槽位已满，可作为非图片请求的 WaitPlan 候选。
+				anyTrulySchedulable = true
+				if waitPlanCandidate == nil {
+					waitPlanCandidate = fresh
 				}
 			}
 
@@ -1217,16 +1221,17 @@ func (s *OpenAIGatewayService) selectAccountWithScheduler(
 	}
 
 	return scheduler.Select(ctx, OpenAIAccountScheduleRequest{
-		GroupID:                  groupID,
-		SessionHash:              sessionHash,
-		StickyAccountID:          stickyAccountID,
-		PreviousResponseID:       previousResponseID,
-		RequestedModel:           requestedModel,
-		RequiredTransport:        requiredTransport,
-		RequiredImageCapability:  requiredImageCapability,
-		PreferredImageCapability: preferredImageCapability,
-		RequireCompact:           requireCompact,
-		ExcludedIDs:              excludedIDs,
+		GroupID:                   groupID,
+		SessionHash:               sessionHash,
+		StickyAccountID:           stickyAccountID,
+		PreviousResponseID:        previousResponseID,
+		RequestedModel:            requestedModel,
+		RequiredTransport:         requiredTransport,
+		RequiredImageCapability:   requiredImageCapability,
+		PreferredImageCapability:  preferredImageCapability,
+		RequireCompact:            requireCompact,
+		ExcludeFullAccountsNoWait: requiredImageCapability != "",
+		ExcludedIDs:               excludedIDs,
 	})
 }
 

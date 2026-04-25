@@ -787,6 +787,79 @@ func TestOpenAIGatewayService_SelectAccountWithSchedulerForImages_PriorityBeatsC
 	}
 }
 
+func TestOpenAIGatewayService_SelectAccountWithSchedulerForImages_SkipsFullAccountsWithoutWaitPlan(t *testing.T) {
+	ctx := context.Background()
+	groupID := int64(10022)
+	accounts := []Account{
+		{
+			ID:          4101,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+		},
+		{
+			ID:          4102,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    0,
+		},
+		{
+			ID:          4103,
+			Platform:    PlatformOpenAI,
+			Type:        AccountTypeOAuth,
+			Status:      StatusActive,
+			Schedulable: true,
+			Concurrency: 1,
+			Priority:    10,
+		},
+	}
+
+	concurrencyCache := schedulerTestConcurrencyCache{
+		acquireResults: map[int64]bool{
+			4101: false,
+			4102: false,
+			4103: true,
+		},
+		loadMap: map[int64]*AccountLoadInfo{
+			4101: {AccountID: 4101, LoadRate: 100, WaitingCount: 2},
+			4102: {AccountID: 4102, LoadRate: 100, WaitingCount: 2},
+			4103: {AccountID: 4103, LoadRate: 0, WaitingCount: 0},
+		},
+	}
+
+	svc := &OpenAIGatewayService{
+		accountRepo:        schedulerTestOpenAIAccountRepo{accounts: accounts},
+		cache:              &schedulerTestGatewayCache{},
+		cfg:                &config.Config{},
+		rateLimitService:   newOpenAIAdvancedSchedulerRateLimitService("true"),
+		concurrencyService: NewConcurrencyService(concurrencyCache),
+	}
+
+	selection, _, err := svc.SelectAccountWithSchedulerForImages(
+		ctx,
+		&groupID,
+		"",
+		"gpt-image-2",
+		nil,
+		OpenAIImagesCapabilityBasic,
+	)
+	require.NoError(t, err)
+	require.NotNil(t, selection)
+	require.NotNil(t, selection.Account)
+	require.True(t, selection.Acquired)
+	require.Nil(t, selection.WaitPlan)
+	require.Equal(t, int64(4103), selection.Account.ID)
+	if selection.ReleaseFunc != nil {
+		selection.ReleaseFunc()
+	}
+}
+
 // 作者: mkx  变更: 2026/04/23 - 同优先级组内 apikey 先于 OAuth
 // 场景：priority=5 组内既有 apikey 也有 OAuth。native 请求下 apikey 应优先拿到。
 func TestOpenAIGatewayService_SelectAccountWithSchedulerForImages_ApikeyPreferredWithinSamePriority(t *testing.T) {
