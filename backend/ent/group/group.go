@@ -80,6 +80,8 @@ const (
 	FieldSimulateCacheEnabled = "simulate_cache_enabled"
 	// FieldSimulateCacheRatio holds the string denoting the simulate_cache_ratio field in the database.
 	FieldSimulateCacheRatio = "simulate_cache_ratio"
+	// FieldRpmLimit holds the string denoting the rpm_limit field in the database.
+	FieldRpmLimit = "rpm_limit"
 	// EdgeAPIKeys holds the string denoting the api_keys edge name in mutations.
 	EdgeAPIKeys = "api_keys"
 	// EdgeRedeemCodes holds the string denoting the redeem_codes edge name in mutations.
@@ -187,6 +189,7 @@ var Columns = []string{
 	FieldMessagesDispatchModelConfig,
 	FieldSimulateCacheEnabled,
 	FieldSimulateCacheRatio,
+	FieldRpmLimit,
 }
 
 var (
@@ -268,8 +271,8 @@ var (
 	DefaultSimulateCacheEnabled bool
 	// DefaultSimulateCacheRatio holds the default value on creation for the "simulate_cache_ratio" field.
 	DefaultSimulateCacheRatio float64
-	// SimulateCacheRatioValidator is a validator for the "simulate_cache_ratio" field. It is called by the builders before save.
-	SimulateCacheRatioValidator func(float64) error
+	// DefaultRpmLimit holds the default value on creation for the "rpm_limit" field.
+	DefaultRpmLimit int
 )
 
 // OrderOption defines the ordering options for the Group queries.
@@ -423,6 +426,11 @@ func BySimulateCacheEnabled(opts ...sql.OrderTermOption) OrderOption {
 // BySimulateCacheRatio orders the results by the simulate_cache_ratio field.
 func BySimulateCacheRatio(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldSimulateCacheRatio, opts...).ToFunc()
+}
+
+// ByRpmLimit orders the results by the rpm_limit field.
+func ByRpmLimit(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldRpmLimit, opts...).ToFunc()
 }
 
 // ByAPIKeysCount orders the results by api_keys count.

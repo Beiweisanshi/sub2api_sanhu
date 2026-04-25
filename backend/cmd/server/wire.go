@@ -98,6 +98,7 @@ func provideCleanup(
 	backupSvc *service.BackupService,
 	paymentOrderExpiry *service.PaymentOrderExpiryService,
 	telemetryHeartbeat *service.TelemetryHeartbeatService,
+	channelMonitorRunner *service.ChannelMonitorRunner,
 ) func() {
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -245,6 +246,12 @@ func provideCleanup(
 					// Stop accepts a context so outstanding heartbeats can flush;
 					// reuse the outer cleanup ctx (10s timeout) as the deadline.
 					telemetryHeartbeat.Stop(ctx)
+				}
+				return nil
+			}},
+			{"ChannelMonitorRunner", func() error {
+				if channelMonitorRunner != nil {
+					channelMonitorRunner.Stop()
 				}
 				return nil
 			}},

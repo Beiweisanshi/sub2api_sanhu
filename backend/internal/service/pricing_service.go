@@ -33,12 +33,13 @@ var (
 		SupportsPromptCaching:           true,
 	}
 	openAIGPT55FallbackPricing = &LiteLLMModelPricing{
-		InputCostPerToken:               5e-06,    // $5 per MTok
-		InputCostPerTokenPriority:       1.25e-05, // $12.5 per MTok (2.5x)
-		OutputCostPerToken:              3e-05,    // $30 per MTok
-		OutputCostPerTokenPriority:      7.5e-05,  // $75 per MTok (2.5x)
-		CacheReadInputTokenCost:         5e-07,    // $0.5 per MTok
-		CacheReadInputTokenCostPriority: 1.25e-06, // $1.25 per MTok (2.5x)
+		InputCostPerToken:               5e-06, // $5 per MTok
+		InputCostPerTokenPriority:       1e-05, // $10 per MTok (2x)
+		OutputCostPerToken:              3e-05, // $30 per MTok
+		OutputCostPerTokenPriority:      6e-05, // $60 per MTok (2x)
+		CacheReadInputTokenCost:         5e-07, // $0.5 per MTok
+		CacheReadInputTokenCostPriority: 1e-06, // $1 per MTok (2x)
+		FastPriceMultiplier:             2.0,
 		LongContextInputTokenThreshold:  272000,
 		LongContextInputCostMultiplier:  2.0,
 		LongContextOutputCostMultiplier: 1.5,
@@ -75,6 +76,7 @@ type LiteLLMModelPricing struct {
 	CacheCreationInputTokenCostAbove1hr float64 `json:"cache_creation_input_token_cost_above_1hr"`
 	CacheReadInputTokenCost             float64 `json:"cache_read_input_token_cost"`
 	CacheReadInputTokenCostPriority     float64 `json:"cache_read_input_token_cost_priority"`
+	FastPriceMultiplier                 float64 `json:"fast_price_multiplier,omitempty"`
 	LongContextInputTokenThreshold      int     `json:"long_context_input_token_threshold,omitempty"`
 	LongContextInputCostMultiplier      float64 `json:"long_context_input_cost_multiplier,omitempty"`
 	LongContextOutputCostMultiplier     float64 `json:"long_context_output_cost_multiplier,omitempty"`
@@ -96,6 +98,7 @@ type LiteLLMRawEntry struct {
 	CacheCreationInputTokenCostAbove1hr *float64 `json:"cache_creation_input_token_cost_above_1hr"`
 	CacheReadInputTokenCost             *float64 `json:"cache_read_input_token_cost"`
 	CacheReadInputTokenCostPriority     *float64 `json:"cache_read_input_token_cost_priority"`
+	FastPriceMultiplier                 *float64 `json:"fast_price_multiplier,omitempty"`
 	SupportsServiceTier                 bool     `json:"supports_service_tier"`
 	LiteLLMProvider                     string   `json:"litellm_provider"`
 	Mode                                string   `json:"mode"`

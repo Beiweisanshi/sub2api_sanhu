@@ -106,6 +106,8 @@ type SystemSettings struct {
 
 	DefaultConcurrency   int
 	DefaultBalance       float64
+	AffiliateRebateRate  float64
+	DefaultUserRPMLimit  int
 	DefaultSubscriptions []DefaultSubscriptionSetting
 
 	// Model fallback configuration
@@ -127,6 +129,13 @@ type SystemSettings struct {
 	OpsRealtimeMonitoringEnabled bool
 	OpsQueryModeDefault          string
 	OpsMetricsIntervalSeconds    int
+
+	// Channel Monitor feature
+	ChannelMonitorEnabled                bool `json:"channel_monitor_enabled"`
+	ChannelMonitorDefaultIntervalSeconds int  `json:"channel_monitor_default_interval_seconds"`
+
+	// Available Channels feature (user-facing aggregate view)
+	AvailableChannelsEnabled bool `json:"available_channels_enabled"`
 
 	// Claude Code version check
 	MinClaudeCodeVersion string
@@ -220,6 +229,13 @@ type PublicSettings struct {
 	AccountQuotaNotifyEnabled   bool
 	BalanceLowNotifyThreshold   float64
 	BalanceLowNotifyRechargeURL string
+
+	// Channel Monitor feature
+	ChannelMonitorEnabled                bool `json:"channel_monitor_enabled"`
+	ChannelMonitorDefaultIntervalSeconds int  `json:"channel_monitor_default_interval_seconds"`
+
+	// Available Channels feature (user-facing aggregate view)
+	AvailableChannelsEnabled bool `json:"available_channels_enabled"`
 }
 
 type WeChatConnectOAuthConfig struct {

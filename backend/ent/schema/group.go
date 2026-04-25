@@ -146,16 +146,19 @@ func (Group) Fields() []ent.Field {
 			SchemaType(map[string]string{dialect.Postgres: "jsonb"}).
 			Comment("OpenAI Messages 调度模型配置：按 Claude 系列/精确模型映射到目标 GPT 模型"),
 
-		// 模拟缓存配置（仅 antigravity 平台使用）
+		// 模拟缓存配置（仅 antigravity 平台使用）。
 		field.Bool("simulate_cache_enabled").
 			Default(false).
-			Comment("是否启用模拟缓存（将部分 input_tokens 虚拟为 cache_read_input_tokens）"),
+			Comment("是否启用模拟缓存计费展示"),
 		field.Float("simulate_cache_ratio").
 			SchemaType(map[string]string{dialect.Postgres: "decimal(5,4)"}).
 			Default(0.7).
-			Min(0).
-			Max(1).
-			Comment("模拟缓存比例（0.0-1.0），表示转换为 cache_read 的比例"),
+			Comment("模拟缓存比例，默认 0.7"),
+
+		// 分组级每分钟请求数上限（0 = 不限制）。设置后优先于用户级兜底生效。
+		field.Int("rpm_limit").
+			Default(0).
+			Comment("分组 RPM 上限，0 表示不限制；设置后接管该分组用户的限流"),
 	}
 }
 

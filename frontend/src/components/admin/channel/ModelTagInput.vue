@@ -1,39 +1,40 @@
 <!-- 作者：mkx | 日期：2026-04-21 | 变更：批量清理 Tailwind 暗色变体类名并同步补充暖色主题改造注释 -->
 <template>
- <div>
- <!-- Tags display -->
- <div class="flex flex-wrap gap-1.5 rounded-lg border border-gray-200 bg-white p-2 min-h-[2.5rem]">
- <span
- v-for="(model, idx) in models"
- :key="idx"
- class="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-sm"
- :class="getPlatformTagClass(props.platform || '')"
- >
- {{ model }}
- <button
- type="button"
- @click="removeModel(idx)"
- class="ml-0.5 rounded-full p-0.5 hover:bg-primary-200"
- >
- <Icon name="x" size="xs" />
- </button>
- </span>
- <input
- ref="inputRef"
- v-model="inputValue"
- type="text"
- class="flex-1 min-w-[120px] border-none bg-transparent text-sm outline-none placeholder:text-gray-400"
- :placeholder="models.length === 0 ? placeholder : ''"
- @keydown.enter.prevent="addModel"
- @keydown.tab.prevent="addModel"
- @keydown.delete="handleBackspace"
- @paste="handlePaste"
- />
- </div>
- <p class="mt-1 text-xs text-gray-400">
- {{ t('admin.channels.form.modelInputHint', 'Press Enter to add, supports paste for batch import.') }}
- </p>
- </div>
+  <div>
+    <!-- Tags display -->
+    <div class="flex flex-wrap gap-1.5 rounded-lg border border-gray-200 bg-white p-2 dark:border-dark-600 dark:bg-dark-800 min-h-[2.5rem]">
+      <span
+        v-for="(model, idx) in models"
+        :key="idx"
+        class="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-sm"
+        :class="getPlatformTagClass(props.platform || '')"
+      >
+        {{ model }}
+        <button
+          type="button"
+          @click="removeModel(idx)"
+          class="ml-0.5 rounded-full p-0.5 hover:bg-primary-200 dark:hover:bg-primary-800"
+        >
+          <Icon name="x" size="xs" />
+        </button>
+      </span>
+      <input
+        ref="inputRef"
+        v-model="inputValue"
+        type="text"
+        class="flex-1 min-w-[120px] border-none bg-transparent text-sm outline-none placeholder:text-gray-400 dark:text-white"
+        :placeholder="models.length === 0 ? placeholder : ''"
+        @keydown.enter.prevent="addModel"
+        @keydown.tab.prevent="addModel"
+        @keydown.delete="handleBackspace"
+        @paste="handlePaste"
+        @blur="addModel"
+      />
+    </div>
+    <p class="mt-1 text-xs text-gray-400">
+      {{ t('admin.channels.form.modelInputHint', 'Press Enter to add, supports paste for batch import.') }}
+    </p>
+  </div>
 </template>
 
 <script setup lang="ts">
