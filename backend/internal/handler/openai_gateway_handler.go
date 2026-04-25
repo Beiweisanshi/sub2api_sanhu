@@ -338,18 +338,20 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				// 池模式：同账号重试
 				if failoverErr.RetryableOnSameAccount {
 					retryLimit := account.GetPoolModeRetryCount()
-					if sameAccountRetryCount[account.ID] < retryLimit {
+					retryDelay, retryNow := openAISameAccountRetryDelay(failoverErr)
+					if retryNow && sameAccountRetryCount[account.ID] < retryLimit {
 						sameAccountRetryCount[account.ID]++
 						reqLog.Warn("openai.pool_mode_same_account_retry",
 							zap.Int64("account_id", account.ID),
 							zap.Int("upstream_status", failoverErr.StatusCode),
 							zap.Int("retry_limit", retryLimit),
 							zap.Int("retry_count", sameAccountRetryCount[account.ID]),
+							zap.Duration("retry_delay", retryDelay),
 						)
 						select {
 						case <-c.Request.Context().Done():
 							return
-						case <-time.After(sameAccountRetryDelay):
+						case <-time.After(retryDelay):
 						}
 						continue
 					}
@@ -724,18 +726,20 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 				// 池模式：同账号重试
 				if failoverErr.RetryableOnSameAccount {
 					retryLimit := account.GetPoolModeRetryCount()
-					if sameAccountRetryCount[account.ID] < retryLimit {
+					retryDelay, retryNow := openAISameAccountRetryDelay(failoverErr)
+					if retryNow && sameAccountRetryCount[account.ID] < retryLimit {
 						sameAccountRetryCount[account.ID]++
 						reqLog.Warn("openai_messages.pool_mode_same_account_retry",
 							zap.Int64("account_id", account.ID),
 							zap.Int("upstream_status", failoverErr.StatusCode),
 							zap.Int("retry_limit", retryLimit),
 							zap.Int("retry_count", sameAccountRetryCount[account.ID]),
+							zap.Duration("retry_delay", retryDelay),
 						)
 						select {
 						case <-c.Request.Context().Done():
 							return
-						case <-time.After(sameAccountRetryDelay):
+						case <-time.After(retryDelay):
 						}
 						continue
 					}
@@ -1548,8 +1552,31 @@ func (h *OpenAIGatewayHandler) ensureForwardErrorResponse(c *gin.Context, stream
 	if c == nil || c.Writer == nil || c.Writer.Written() {
 		return false
 	}
-	h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", "Upstream request failed", streamStarted)
+	h.handleStreamingAwareError(c, http.StatusBadGateway, "upstream_error", openAIForwardFallbackMessage(c), streamStarted)
 	return true
+}
+
+func openAIForwardFallbackMessage(c *gin.Context) string {
+	const prefix = "Upstream request failed"
+	if c == nil {
+		return prefix
+	}
+	raw, ok := c.Get(service.OpsUpstreamErrorMessageKey)
+	if !ok {
+		return prefix
+	}
+	msg, ok := raw.(string)
+	if !ok {
+		return prefix
+	}
+	msg = strings.TrimSpace(msg)
+	if msg == "" || strings.EqualFold(msg, prefix) {
+		return prefix
+	}
+	if len(msg) > 300 {
+		msg = msg[:300] + "..."
+	}
+	return prefix + ": " + msg
 }
 
 func shouldLogOpenAIForwardFailureAsWarn(c *gin.Context, wroteFallback bool) bool {
@@ -1578,6 +1605,49 @@ func setOpenAIClientTransportHTTP(c *gin.Context) {
 
 func setOpenAIClientTransportWS(c *gin.Context) {
 	service.SetOpenAIClientTransport(c, service.OpenAIClientTransportWS)
+}
+
+const openAISameAccountRetryAfterMax = 3 * time.Second
+
+func openAISameAccountRetryDelay(failoverErr *service.UpstreamFailoverError) (time.Duration, bool) {
+	if failoverErr == nil {
+		return sameAccountRetryDelay, true
+	}
+	if failoverErr.StatusCode != http.StatusTooManyRequests {
+		return sameAccountRetryDelay, true
+	}
+	if failoverErr.ResponseHeaders == nil {
+		return sameAccountRetryDelay, true
+	}
+	delay, ok := parseOpenAIRetryAfterHeader(failoverErr.ResponseHeaders.Get("Retry-After"))
+	if !ok {
+		return sameAccountRetryDelay, true
+	}
+	if delay > openAISameAccountRetryAfterMax {
+		return 0, false
+	}
+	return delay, true
+}
+
+func parseOpenAIRetryAfterHeader(raw string) (time.Duration, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.ParseFloat(raw, 64); err == nil {
+		if seconds <= 0 {
+			return 0, false
+		}
+		return time.Duration(seconds * float64(time.Second)), true
+	}
+	if t, err := http.ParseTime(raw); err == nil {
+		delay := time.Until(t)
+		if delay <= 0 {
+			return 0, false
+		}
+		return delay, true
+	}
+	return 0, false
 }
 
 func ensureOpenAIPoolModeSessionHash(sessionHash string, account *service.Account) string {
