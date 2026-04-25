@@ -5,11 +5,15 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
+	"regexp"
+	"strconv"
 	"testing"
 	"time"
+
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
 )
 
 // swapMonitorHTTPClient 临时替换 monitorHTTPClient 为不带 SSRF 校验的普通 client，
@@ -49,7 +53,7 @@ func (h *captureHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func setupFakeAnthropic(t *testing.T, handler *captureHandler) string {
+func setupFakeAnthropic(t *testing.T, handler http.Handler) string {
 	t.Helper()
 	swapMonitorHTTPClient(t)
 	srv := httptest.NewServer(handler)
@@ -61,7 +65,7 @@ func TestRunCheckForModel_OffMode_PreservesDefaultBody(t *testing.T) {
 	h := &captureHandler{respondText: "the answer is 42"}
 	endpoint := setupFakeAnthropic(t, h)
 
-	// 跑一次 off 模式（opts=nil），确认默认 body 行为未变
+	// 跑一次 off 模式（opts=nil），确认 Anthropic 默认请求保持 Claude Code 模拟形态。
 	_ = runCheckForModel(context.Background(), MonitorProviderAnthropic, endpoint, "sk-fake", "claude-x", nil)
 
 	if h.lastBody["model"] != "claude-x" {
@@ -70,8 +74,65 @@ func TestRunCheckForModel_OffMode_PreservesDefaultBody(t *testing.T) {
 	if _, ok := h.lastBody["messages"]; !ok {
 		t.Error("default body should contain messages")
 	}
+	if stream, ok := h.lastBody["stream"].(bool); !ok || !stream {
+		t.Errorf("default Anthropic body should mimic Claude Code stream=true, got %v", h.lastBody["stream"])
+	}
+	if temperature, ok := h.lastBody["temperature"].(float64); !ok || temperature != 1 {
+		t.Errorf("default Anthropic body should set temperature=1, got %v", h.lastBody["temperature"])
+	}
+	if mt, ok := h.lastBody["max_tokens"].(float64); !ok || mt != monitorChallengeMaxTokens {
+		t.Errorf("default Anthropic body should set max_tokens=%d, got %v", monitorChallengeMaxTokens, h.lastBody["max_tokens"])
+	}
+	systemBlocks, _ := h.lastBody["system"].([]any)
+	if len(systemBlocks) == 0 {
+		t.Fatal("default Anthropic body should contain Claude Code system block")
+	}
+	systemBlock, _ := systemBlocks[0].(map[string]any)
+	if systemBlock["text"] != claudeCodeSystemPrompt {
+		t.Errorf("default Anthropic system prompt mismatch: %v", systemBlock["text"])
+	}
+	if _, ok := h.lastBody["metadata"].(map[string]any); !ok {
+		t.Errorf("default Anthropic body should contain metadata.user_id, got %v", h.lastBody["metadata"])
+	}
 	if h.lastHeaders.Get("x-api-key") != "sk-fake" {
 		t.Errorf("expected adapter's x-api-key header, got %q", h.lastHeaders.Get("x-api-key"))
+	}
+	if h.lastHeaders.Get("User-Agent") != claude.DefaultHeaders["User-Agent"] {
+		t.Errorf("expected Claude Code User-Agent, got %q", h.lastHeaders.Get("User-Agent"))
+	}
+	if h.lastHeaders.Get("anthropic-beta") != claude.APIKeyBetaHeader {
+		t.Errorf("expected API-key Claude Code beta header, got %q", h.lastHeaders.Get("anthropic-beta"))
+	}
+	if h.lastHeaders.Get("x-client-request-id") == "" {
+		t.Error("expected x-client-request-id to be generated")
+	}
+}
+
+func TestRunCheckForModel_AnthropicStreamResponseChallenge(t *testing.T) {
+	h := &anthropicStreamChallengeHandler{}
+	endpoint := setupFakeAnthropic(t, h)
+
+	res := runCheckForModel(context.Background(), MonitorProviderAnthropic, endpoint, "sk-fake", "claude-x", nil)
+
+	if res.Status != MonitorStatusOperational {
+		t.Fatalf("stream response should pass challenge, got status=%s message=%q", res.Status, res.Message)
+	}
+	if h.lastPath != "/v1/messages" {
+		t.Errorf("expected messages path, got %q", h.lastPath)
+	}
+	if h.lastQuery != "beta=true" {
+		t.Errorf("expected beta=true query, got %q", h.lastQuery)
+	}
+}
+
+func TestRunCheckForModel_Anthropic2xxMismatchIsOperational(t *testing.T) {
+	h := &captureHandler{respondText: "hello"}
+	endpoint := setupFakeAnthropic(t, h)
+
+	res := runCheckForModel(context.Background(), MonitorProviderAnthropic, endpoint, "sk-fake", "claude-x", nil)
+
+	if res.Status != MonitorStatusOperational {
+		t.Fatalf("2xx response should be operational even when challenge text mismatches, got status=%s message=%q", res.Status, res.Message)
 	}
 }
 
@@ -124,7 +185,7 @@ func TestRunCheckForModel_MergeMode_UserFieldsWinButDenyListProtects(t *testing.
 
 func TestRunCheckForModel_ReplaceMode_FullBodyUsedAndChallengeSkipped(t *testing.T) {
 	// replace 模式下我们的 body 完全自定义，challenge 数学题不会出现在请求里，
-	// 上游也不会回正确答案 — 但只要 2xx + 响应文本非空，就算 operational
+	// 上游也不会回正确答案 — 但只要返回 2xx，就算 operational
 	h := &captureHandler{respondText: "any non-empty text"}
 	endpoint := setupFakeAnthropic(t, h)
 
@@ -147,14 +208,14 @@ func TestRunCheckForModel_ReplaceMode_FullBodyUsedAndChallengeSkipped(t *testing
 	if h.lastBody["system"] != "You are someone else" {
 		t.Errorf("replace mode should use user's system, got %v", h.lastBody["system"])
 	}
-	// challenge 虽然没命中，但由于 replace 模式跳过 challenge 校验 + 响应非空 → operational
+	// challenge 虽然没命中，但 2xx 即视为可用。
 	if res.Status != MonitorStatusOperational {
-		t.Errorf("replace mode with 2xx + non-empty text should be operational, got status=%s message=%q",
+		t.Errorf("replace mode with 2xx should be operational, got status=%s message=%q",
 			res.Status, res.Message)
 	}
 }
 
-func TestRunCheckForModel_ReplaceMode_EmptyResponseIsFailed(t *testing.T) {
+func TestRunCheckForModel_ReplaceMode_Empty2xxResponseIsOperational(t *testing.T) {
 	h := &captureHandler{respondText: ""} // 上游 200 但 content[0].text 为空
 	endpoint := setupFakeAnthropic(t, h)
 
@@ -164,10 +225,85 @@ func TestRunCheckForModel_ReplaceMode_EmptyResponseIsFailed(t *testing.T) {
 	}
 	res := runCheckForModel(context.Background(), MonitorProviderAnthropic, endpoint, "sk-fake", "claude-x", opts)
 
-	if res.Status != MonitorStatusFailed {
-		t.Errorf("replace mode with empty text should be failed, got status=%s", res.Status)
+	if res.Status != MonitorStatusOperational {
+		t.Errorf("replace mode with empty 2xx response should be operational, got status=%s message=%q", res.Status, res.Message)
 	}
-	if !strings.Contains(res.Message, "replace-mode") {
-		t.Errorf("failure message should hint replace-mode, got %q", res.Message)
+}
+
+type anthropicStreamChallengeHandler struct {
+	lastBody  map[string]any
+	lastPath  string
+	lastQuery string
+}
+
+func (h *anthropicStreamChallengeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.lastPath = r.URL.Path
+	h.lastQuery = r.URL.RawQuery
+	defer func() { _ = r.Body.Close() }()
+	_ = json.NewDecoder(r.Body).Decode(&h.lastBody)
+
+	answer, err := solveMonitorChallengeFromBody(h.lastBody)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(http.StatusOK)
+	writeSSEData(w, map[string]any{
+		"type":  "content_block_delta",
+		"index": 0,
+		"delta": map[string]any{
+			"type": "text_delta",
+			"text": answer,
+		},
+	})
+}
+
+var monitorChallengeQuestionRegex = regexp.MustCompile(`Q:\s*(\d+)\s*([+-])\s*(\d+)\s*=\s*\?\s*A:`)
+
+func solveMonitorChallengeFromBody(body map[string]any) (string, error) {
+	prompt, err := monitorPromptFromBody(body)
+	if err != nil {
+		return "", err
+	}
+	matches := monitorChallengeQuestionRegex.FindAllStringSubmatch(prompt, -1)
+	if len(matches) == 0 {
+		return "", fmt.Errorf("challenge prompt not found")
+	}
+	last := matches[len(matches)-1]
+	left, _ := strconv.Atoi(last[1])
+	right, _ := strconv.Atoi(last[3])
+	switch last[2] {
+	case "+":
+		return strconv.Itoa(left + right), nil
+	case "-":
+		return strconv.Itoa(left - right), nil
+	default:
+		return "", fmt.Errorf("unsupported operator %q", last[2])
+	}
+}
+
+func monitorPromptFromBody(body map[string]any) (string, error) {
+	messages, _ := body["messages"].([]any)
+	if len(messages) == 0 {
+		return "", fmt.Errorf("messages missing")
+	}
+	first, _ := messages[0].(map[string]any)
+	content, _ := first["content"].([]any)
+	if len(content) == 0 {
+		return "", fmt.Errorf("message content missing")
+	}
+	block, _ := content[0].(map[string]any)
+	text, _ := block["text"].(string)
+	if text == "" {
+		return "", fmt.Errorf("message text missing")
+	}
+	return text, nil
+}
+
+func writeSSEData(w http.ResponseWriter, payload map[string]any) {
+	data, _ := json.Marshal(payload)
+	_, _ = fmt.Fprintf(w, "event: %s\n", payload["type"])
+	_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 }

@@ -47,8 +47,8 @@ const (
 
 	// providerOpenAIPath OpenAI Chat Completions 路径。
 	providerOpenAIPath = "/v1/chat/completions"
-	// providerAnthropicPath Anthropic Messages 路径。
-	providerAnthropicPath = "/v1/messages"
+	// providerAnthropicPath Anthropic Messages 路径；保留 beta=true 以贴近 Claude Code 模拟请求。
+	providerAnthropicPath = "/v1/messages?beta=true"
 	// providerGeminiPathTemplate Gemini generateContent 路径模板（含 model 占位）。
 	providerGeminiPathTemplate = "/v1beta/models/%s:generateContent"
 

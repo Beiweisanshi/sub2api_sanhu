@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/claude"
+	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 )
 
@@ -61,10 +64,8 @@ func runCheckForModel(ctx context.Context, provider, endpoint, apiKey, model str
 	}
 
 	challenge := generateChallenge()
-	mode := bodyOverrideMode(opts)
-
 	start := time.Now()
-	respText, rawBody, statusCode, err := callProvider(ctx, provider, endpoint, apiKey, model, challenge.Prompt, opts)
+	_, rawBody, statusCode, err := callProvider(ctx, provider, endpoint, apiKey, model, challenge.Prompt, opts)
 	latency := time.Since(start)
 	latencyMs := int(latency / time.Millisecond)
 	res.LatencyMs = &latencyMs
@@ -83,24 +84,8 @@ func runCheckForModel(ctx context.Context, provider, endpoint, apiKey, model str
 		return res
 	}
 
-	// Replace 模式：跳过 challenge 校验（用户 body 是静态的，challenge 没法嵌入）。
-	// 改用「HTTP 2xx + 响应文本（adapter.textPath 抽取）非空」作为 operational 判定。
-	// 响应文本为空则降级为 failed（视为上游回了 200 但没实际内容）。
-	if mode == MonitorBodyOverrideModeReplace {
-		if strings.TrimSpace(respText) == "" {
-			res.Status = MonitorStatusFailed
-			res.Message = truncateMessage("replace-mode: upstream returned 2xx with empty text")
-			return res
-		}
-		return finalizeOperationalOrDegraded(res, latency, latencyMs)
-	}
-
-	if !validateChallenge(respText, challenge.Expected) {
-		res.Status = MonitorStatusFailed
-		res.Message = truncateMessage(sanitizeErrorMessage(fmt.Sprintf("challenge mismatch (expected %s, got %q)", challenge.Expected, respText)))
-		return res
-	}
-
+	// 监控只验证上游是否接受并成功完成请求：任意 2xx 都视为可用。
+	// challenge prompt 仍作为轻量真实请求发送，但不再要求模型返回特定答案。
 	return finalizeOperationalOrDegraded(res, latency, latencyMs)
 }
 
@@ -146,11 +131,11 @@ func pingEndpointOrigin(ctx context.Context, endpoint string) *int {
 	return &ms
 }
 
-// providerAdapter 描述某个 provider 在 challenge 检测中需要的 4 件事：
+// providerAdapter 描述某个 provider 在 challenge 检测中需要的核心行为：
 //   - 拼出请求路径（含 model 占位）
 //   - 序列化请求体
 //   - 构造鉴权头
-//   - 从响应 JSON 中按 path 提取文本（gjson path）
+//   - 从响应 JSON/SSE 中提取文本
 //
 // 加新 provider 只需要在 providerAdapters 里增加一个条目，无需触碰 callProvider / validateProvider。
 type providerAdapter struct {
@@ -158,6 +143,7 @@ type providerAdapter struct {
 	buildBody    func(model, prompt string) ([]byte, error)
 	buildHeaders func(apiKey string) map[string]string
 	textPath     string // gjson 提取响应文本的 path
+	extractText  func(resp []byte) string
 }
 
 // providerAdapters 全部已支持的 provider。键值即 MonitorProvider* 字符串。
@@ -182,19 +168,17 @@ var providerAdapters = map[string]providerAdapter{
 	MonitorProviderAnthropic: {
 		buildPath: func(string) string { return providerAnthropicPath },
 		buildBody: func(model, prompt string) ([]byte, error) {
-			return json.Marshal(map[string]any{
-				"model":      model,
-				"messages":   []map[string]string{{"role": "user", "content": prompt}},
-				"max_tokens": monitorChallengeMaxTokens,
-			})
+			payload, err := createClaudeCodeStylePayload(model, claude.DefaultHeaders["User-Agent"], prompt, monitorChallengeMaxTokens, true)
+			if err != nil {
+				return nil, err
+			}
+			return json.Marshal(payload)
 		},
 		buildHeaders: func(apiKey string) map[string]string {
-			return map[string]string{
-				"x-api-key":         apiKey,
-				"anthropic-version": monitorAnthropicAPIVersion,
-			}
+			return buildAnthropicMonitorHeaders(apiKey)
 		},
-		textPath: "content.0.text",
+		textPath:    "content.0.text",
+		extractText: extractAnthropicMonitorText,
 	},
 	MonitorProviderGemini: {
 		// Gemini 把 model 名写在 URL path 上：/v1beta/models/{model}:generateContent
@@ -245,24 +229,93 @@ func callProvider(ctx context.Context, provider, endpoint, apiKey, model, prompt
 	if err != nil {
 		return "", "", status, err
 	}
-	return gjson.GetBytes(respBytes, adapter.textPath).String(), string(respBytes), status, nil
+	return extractAdapterText(adapter, respBytes), string(respBytes), status, nil
+}
+
+func extractAdapterText(adapter providerAdapter, respBytes []byte) string {
+	if adapter.extractText != nil {
+		return adapter.extractText(respBytes)
+	}
+	return gjson.GetBytes(respBytes, adapter.textPath).String()
+}
+
+// buildAnthropicMonitorHeaders 对齐账号测试里的 Claude Code 模拟请求：
+// 使用完整 CLI 指纹头 + API-key beta 集合，仅鉴权方式保持 x-api-key。
+func buildAnthropicMonitorHeaders(apiKey string) map[string]string {
+	headers := make(map[string]string, len(claude.DefaultHeaders)+5)
+	for key, value := range claude.DefaultHeaders {
+		headers[key] = value
+	}
+	headers["x-api-key"] = apiKey
+	headers["anthropic-version"] = monitorAnthropicAPIVersion
+	headers["anthropic-beta"] = claude.APIKeyBetaHeader
+	headers["x-client-request-id"] = uuid.NewString()
+	headers["Accept"] = "application/json"
+	return headers
+}
+
+func extractAnthropicMonitorText(respBytes []byte) string {
+	if text := gjson.GetBytes(respBytes, "content.0.text").String(); text != "" {
+		return text
+	}
+	return extractAnthropicSSEText(respBytes)
+}
+
+func extractAnthropicSSEText(respBytes []byte) string {
+	scanner := bufio.NewScanner(bytes.NewReader(respBytes))
+	scanner.Buffer(make([]byte, 0, 1024), monitorResponseMaxBytes)
+
+	var out strings.Builder
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		if text := gjson.Get(data, "delta.text").String(); text != "" {
+			out.WriteString(text)
+		}
+		if text := gjson.Get(data, "content_block.text").String(); text != "" {
+			out.WriteString(text)
+		}
+	}
+	return out.String()
 }
 
 // mergeHeaders 把用户自定义 headers 合并到 adapter 默认 headers 上。
 // 用户值覆盖默认；命中黑名单（hop-by-hop / 由 http.Client 自管的）的 key 静默丢弃。
 func mergeHeaders(base map[string]string, opts *CheckOptions) map[string]string {
-	if opts == nil || len(opts.ExtraHeaders) == 0 {
-		return base
+	extraLen := 0
+	if opts != nil {
+		extraLen = len(opts.ExtraHeaders)
 	}
-	out := make(map[string]string, len(base)+len(opts.ExtraHeaders))
-	for k, v := range base {
+	out := make(map[string]string, len(base)+extraLen)
+	index := make(map[string]string, len(base)+extraLen)
+	put := func(k, v string) {
+		lower := strings.ToLower(strings.TrimSpace(k))
+		if lower == "" {
+			return
+		}
+		if old, ok := index[lower]; ok {
+			delete(out, old)
+		}
 		out[k] = v
+		index[lower] = k
+	}
+	for k, v := range base {
+		put(k, v)
+	}
+	if opts == nil || len(opts.ExtraHeaders) == 0 {
+		return out
 	}
 	for k, v := range opts.ExtraHeaders {
 		if IsForbiddenHeaderName(k) {
 			continue
 		}
-		out[k] = v
+		put(k, v)
 	}
 	return out
 }
@@ -333,10 +386,13 @@ func postRawJSON(ctx context.Context, fullURL string, payload []byte, headers ma
 	if err != nil {
 		return nil, 0, fmt.Errorf("build request: %w", err)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
+	setHeaderRaw(req.Header, "content-type", "application/json")
+	setHeaderRaw(req.Header, "Accept", "application/json")
 	for k, v := range headers {
-		req.Header.Set(k, v)
+		if strings.TrimSpace(k) == "" || v == "" {
+			continue
+		}
+		setHeaderRaw(req.Header, resolveWireCasing(k), v)
 	}
 
 	resp, err := monitorHTTPClient.Do(req)

@@ -9,13 +9,18 @@
       <div
         v-for="r in results"
         :key="r.model"
-        class="flex items-center justify-between rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-dark-600"
+        class="flex items-start justify-between gap-3 rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-dark-600"
       >
-        <div class="flex flex-col">
-          <span class="font-medium text-gray-900 dark:text-white">{{ r.model }}</span>
-          <span v-if="r.message" class="text-xs text-gray-500 dark:text-gray-400">{{ r.message }}</span>
+        <div class="min-w-0 flex-1">
+          <span class="block truncate font-medium text-gray-900 dark:text-white">{{ r.model }}</span>
+          <span
+            v-if="r.message"
+            class="mt-1 block max-h-28 max-w-full overflow-y-auto break-words text-xs leading-relaxed text-gray-500 dark:text-gray-400"
+          >
+            {{ r.message }}
+          </span>
         </div>
-        <div class="flex items-center gap-2">
+        <div class="flex flex-none items-center gap-2">
           <span
             class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px]"
             :class="statusBadgeClass(r.status)"

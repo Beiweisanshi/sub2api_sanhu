@@ -7,8 +7,7 @@ import "time"
 //   - off     使用 adapter 默认 body（忽略 BodyOverride）
 //   - merge   adapter 默认 body 与 BodyOverride 浅合并（用户优先；
 //     model/messages/contents 等关键字段在 checker 黑名单内会被静默丢弃）
-//   - replace 完全用 BodyOverride 作为 body；跳过 challenge 校验，
-//     改成 HTTP 2xx + 响应非空即视为可用（用户负责构造 body）
+//   - replace 完全用 BodyOverride 作为 body；HTTP 2xx 即视为可用
 const (
 	MonitorBodyOverrideModeOff     = "off"
 	MonitorBodyOverrideModeMerge   = "merge"
