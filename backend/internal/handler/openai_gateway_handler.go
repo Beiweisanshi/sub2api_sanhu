@@ -48,10 +48,14 @@ func resolveOpenAIForwardDefaultMappedModel(apiKey *service.APIKey, fallbackMode
 }
 
 func resolveOpenAIMessagesDispatchMappedModel(apiKey *service.APIKey, requestedModel string) string {
+	return resolveOpenAIMessagesDispatchModelResolution(apiKey, requestedModel).Model
+}
+
+func resolveOpenAIMessagesDispatchModelResolution(apiKey *service.APIKey, requestedModel string) service.OpenAIMessagesDispatchModelResolution {
 	if apiKey == nil || apiKey.Group == nil {
-		return ""
+		return service.OpenAIMessagesDispatchModelResolution{}
 	}
-	return strings.TrimSpace(apiKey.Group.ResolveMessagesDispatchModel(requestedModel))
+	return apiKey.Group.ResolveMessagesDispatchModelWithReasoning(requestedModel)
 }
 
 // NewOpenAIGatewayHandler creates a new OpenAIGatewayHandler
@@ -238,6 +242,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	// Generate session hash (header first; fallback to prompt_cache_key)
 	sessionHash := h.gatewayService.GenerateSessionHash(c, sessionHashBody)
+	requireCompact := isOpenAIRemoteCompactPath(c)
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
@@ -256,6 +261,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			reqModel,
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportAny,
+			requireCompact,
 		)
 		if err != nil {
 			reqLog.Warn("openai.account_select_failed",
@@ -263,6 +269,10 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 				zap.Int("excluded_account_count", len(failedAccountIDs)),
 			)
 			if len(failedAccountIDs) == 0 {
+				if errors.Is(err, service.ErrNoAvailableCompactAccounts) {
+					h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "compact_not_supported", "No available OpenAI accounts support /responses/compact", streamStarted)
+					return
+				}
 				h.handleStreamingAwareError(c, http.StatusServiceUnavailable, "api_error", "Service temporarily unavailable", streamStarted)
 				return
 			}
@@ -566,7 +576,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	}
 	reqModel := modelResult.String()
 	routingModel := service.NormalizeOpenAICompatRequestedModel(reqModel)
-	preferredMappedModel := resolveOpenAIMessagesDispatchMappedModel(apiKey, reqModel)
+	preferredModelResolution := resolveOpenAIMessagesDispatchModelResolution(apiKey, reqModel)
+	preferredMappedModel := strings.TrimSpace(preferredModelResolution.Model)
+	preferredReasoningEffort := strings.TrimSpace(preferredModelResolution.ReasoningEffort)
 	reqStream := gjson.GetBytes(body, "stream").Bool()
 
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
@@ -629,6 +641,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 	sameAccountRetryCount := make(map[int64]int)
 	var lastFailoverErr *service.UpstreamFailoverError
 	effectiveMappedModel := preferredMappedModel
+	effectiveReasoningEffort := preferredReasoningEffort
 
 	for {
 		currentRoutingModel := routingModel
@@ -644,6 +657,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			currentRoutingModel,
 			failedAccountIDs,
 			service.OpenAIUpstreamTransportAny,
+			false,
 		)
 		if err != nil {
 			reqLog.Warn("openai_messages.account_select_failed",
@@ -688,7 +702,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		if channelMappingMsg.Mapped {
 			forwardBody = h.gatewayService.ReplaceModelInBody(body, channelMappingMsg.MappedModel)
 		}
-		result, err := h.gatewayService.ForwardAsAnthropic(c.Request.Context(), c, account, forwardBody, promptCacheKey, defaultMappedModel)
+		result, err := h.gatewayService.ForwardAsAnthropic(c.Request.Context(), c, account, forwardBody, promptCacheKey, defaultMappedModel, effectiveReasoningEffort)
 
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		if accountReleaseFunc != nil {
@@ -1167,6 +1181,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		reqModel,
 		nil,
 		service.OpenAIUpstreamTransportResponsesWebsocketV2,
+		false,
 	)
 	if err != nil {
 		reqLog.Warn("openai.websocket_account_select_failed", zap.Error(err))

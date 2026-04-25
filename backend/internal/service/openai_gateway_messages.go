@@ -31,6 +31,7 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	body []byte,
 	promptCacheKey string,
 	defaultMappedModel string,
+	defaultReasoningEffort string,
 ) (*OpenAIForwardResult, error) {
 	startTime := time.Now()
 
@@ -44,7 +45,23 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	normalizedModel := anthropicReq.Model
 	clientStream := anthropicReq.Stream // client's original stream preference
 
-	// 2. Convert Anthropic → Responses
+	// 2. Model mapping is resolved before conversion so mapped-model suffixes
+	// such as gpt-5.5-xhigh can fill output_config.effort before the request
+	// is converted to Responses format.
+	billingModel, usedDefaultMappedModel := resolveOpenAIForwardModelWithDefault(account, normalizedModel, defaultMappedModel)
+	mappedReasoningEffort := ""
+	if normalizedBillingModel, reasoningEffort := normalizeOpenAICompatResolvedModel(billingModel); normalizedBillingModel != "" {
+		billingModel = normalizedBillingModel
+		mappedReasoningEffort = reasoningEffort
+	}
+	if mappedReasoningEffort == "" && usedDefaultMappedModel {
+		mappedReasoningEffort = defaultReasoningEffort
+	}
+	if mappedReasoningEffort != "" {
+		applyOpenAICompatDefaultReasoningEffort(&anthropicReq, mappedReasoningEffort)
+	}
+
+	// 3. Convert Anthropic → Responses
 	responsesReq, err := apicompat.AnthropicToResponses(&anthropicReq)
 	if err != nil {
 		return nil, fmt.Errorf("convert anthropic to responses: %w", err)
@@ -55,13 +72,12 @@ func (s *OpenAIGatewayService) ForwardAsAnthropic(
 	responsesReq.Stream = true
 	isStream := true
 
-	// 2b. Handle BetaFastMode → service_tier: "priority"
+	// 3b. Handle BetaFastMode → service_tier: "priority"
 	if containsBetaToken(c.GetHeader("anthropic-beta"), claude.BetaFastMode) {
 		responsesReq.ServiceTier = "priority"
 	}
 
-	// 3. Model mapping
-	billingModel := resolveOpenAIForwardModel(account, normalizedModel, defaultMappedModel)
+	// 4. Upstream model normalization
 	upstreamModel, err := resolveOpenAIUpstreamModelOrFailover(account, billingModel)
 	if err != nil {
 		return nil, err

@@ -6,18 +6,23 @@ import "strings"
 // forwarding. Group-level default mapping only applies when the account itself
 // did not match any explicit model_mapping rule.
 func resolveOpenAIForwardModel(account *Account, requestedModel, defaultMappedModel string) string {
+	model, _ := resolveOpenAIForwardModelWithDefault(account, requestedModel, defaultMappedModel)
+	return model
+}
+
+func resolveOpenAIForwardModelWithDefault(account *Account, requestedModel, defaultMappedModel string) (model string, usedDefault bool) {
 	if account == nil {
 		if defaultMappedModel != "" {
-			return defaultMappedModel
+			return defaultMappedModel, true
 		}
-		return requestedModel
+		return requestedModel, false
 	}
 
 	mappedModel, matched := account.ResolveMappedModel(requestedModel)
 	if !matched && defaultMappedModel != "" && !isExplicitCodexModel(requestedModel) {
-		return defaultMappedModel
+		return defaultMappedModel, true
 	}
-	return mappedModel
+	return mappedModel, false
 }
 
 func isExplicitCodexModel(model string) bool {
@@ -38,4 +43,23 @@ func isExplicitCodexModel(model string) bool {
 		return getNormalizedCodexModel(base) != ""
 	}
 	return false
+}
+
+// resolveOpenAICompactForwardModel determines the compact-only upstream model
+// for /responses/compact requests. It never affects normal /responses traffic.
+// When no compact-specific mapping matches, the input model is returned as-is.
+func resolveOpenAICompactForwardModel(account *Account, model string) string {
+	trimmedModel := strings.TrimSpace(model)
+	if trimmedModel == "" || account == nil {
+		return trimmedModel
+	}
+
+	mappedModel, matched := account.ResolveCompactMappedModel(trimmedModel)
+	if !matched {
+		return trimmedModel
+	}
+	if trimmedMapped := strings.TrimSpace(mappedModel); trimmedMapped != "" {
+		return trimmedMapped
+	}
+	return trimmedModel
 }

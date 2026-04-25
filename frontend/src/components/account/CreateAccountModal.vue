@@ -2479,6 +2479,45 @@
  </div>
  </div>
 
+ <!-- OpenAI Compact 能力配置 -->
+ <div
+ v-if="form.platform === 'openai' && (accountCategory === 'oauth-based' || accountCategory === 'apikey')"
+ class="border-t border-gray-200 pt-4 space-y-4"
+ >
+ <div class="flex items-center justify-between">
+ <div>
+ <label class="input-label mb-0">{{ t('admin.accounts.openai.compactMode') }}</label>
+ <p class="mt-1 text-xs text-gray-500">
+ {{ t('admin.accounts.openai.compactModeDesc') }}
+ </p>
+ </div>
+ <div class="w-44">
+ <Select v-model="openAICompactMode" :options="openAICompactModeOptions" />
+ </div>
+ </div>
+ <div>
+ <label class="input-label">{{ t('admin.accounts.openai.compactModelMapping') }}</label>
+ <p class="input-hint">{{ t('admin.accounts.openai.compactModelMappingDesc') }}</p>
+ <div v-if="openAICompactModelMappings.length > 0" class="mb-3 space-y-2">
+ <div
+ v-for="(mapping, index) in openAICompactModelMappings"
+ :key="getOpenAICompactModelMappingKey(mapping)"
+ class="flex items-center gap-2"
+ >
+ <input v-model="mapping.from" type="text" class="input flex-1" :placeholder="t('admin.accounts.fromModel')" />
+ <span class="text-gray-400">→</span>
+ <input v-model="mapping.to" type="text" class="input flex-1" :placeholder="t('admin.accounts.toModel')" />
+ <button type="button" @click="removeOpenAICompactModelMapping(index)" class="text-red-500 hover:text-red-700">
+ <Icon name="trash" size="sm" />
+ </button>
+ </div>
+ </div>
+ <button type="button" @click="addOpenAICompactModelMapping" class="btn btn-secondary text-sm">
+ + {{ t('admin.accounts.addMapping') }}
+ </button>
+ </div>
+ </div>
+
  <div>
  <div class="flex items-center justify-between">
  <div>
@@ -2948,7 +2987,8 @@ import type {
  AccountPlatform,
  AccountType,
  CheckMixedChannelResponse,
- CreateAccountRequest
+ CreateAccountRequest,
+ OpenAICompactMode
 } from '@/types'
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
@@ -3089,6 +3129,7 @@ const editWeeklyResetDay = ref<number | null>(null)
 const editWeeklyResetHour = ref<number | null>(null)
 const editResetTimezone = ref<string | null>(null)
 const modelMappings = ref<ModelMapping[]>([])
+const openAICompactModelMappings = ref<ModelMapping[]>([])
 const modelRestrictionMode = ref<'whitelist' | 'mapping'>('whitelist')
 const allowedModels = ref<string[]>([])
 const DEFAULT_POOL_MODE_RETRY_COUNT = 3
@@ -3101,6 +3142,7 @@ const customErrorCodeInput = ref<number | null>(null)
 const interceptWarmupRequests = ref(false)
 const autoPauseOnExpired = ref(true)
 const openaiPassthroughEnabled = ref(false)
+const openAICompactMode = ref<OpenAICompactMode>('auto')
 // 作者：mkx  变更：2026-04-22 新增 — OpenAI Chat Completions 原生直通开关（仅 API Key）
 const openaiChatCompletionsNativeEnabled = ref(false)
 const openaiOAuthResponsesWebSocketV2Mode = ref<OpenAIWSMode>(OPENAI_WS_MODE_OFF)
@@ -3144,10 +3186,28 @@ const bedrockApiKeyValue = ref('')
 const tempUnschedEnabled = ref(false)
 const tempUnschedRules = ref<TempUnschedRuleForm[]>([])
 const getModelMappingKey = createStableObjectKeyResolver<ModelMapping>('create-model-mapping')
+const getOpenAICompactModelMappingKey = createStableObjectKeyResolver<ModelMapping>('create-openai-compact-model-mapping')
 const getAntigravityModelMappingKey = createStableObjectKeyResolver<ModelMapping>('create-antigravity-model-mapping')
 const getTempUnschedRuleKey = createStableObjectKeyResolver<TempUnschedRuleForm>('create-temp-unsched-rule')
 const geminiOAuthType = ref<'code_assist' | 'google_one' | 'ai_studio'>('google_one')
 const geminiAIStudioOAuthEnabled = ref(false)
+const openAICompactModeOptions = computed(() => [
+ { value: 'auto', label: t('admin.accounts.openai.compactModeAuto') },
+ { value: 'force_on', label: t('admin.accounts.openai.compactModeForceOn') },
+ { value: 'force_off', label: t('admin.accounts.openai.compactModeForceOff') }
+])
+
+const buildOpenAICompactModelMapping = () =>
+ buildModelMappingObject('mapping', [], openAICompactModelMappings.value)
+
+const applyOpenAICompactModelMapping = (credentials: Record<string, unknown>) => {
+ const compactModelMapping = buildOpenAICompactModelMapping()
+ if (compactModelMapping) {
+ credentials.compact_model_mapping = compactModelMapping
+ } else {
+ delete credentials.compact_model_mapping
+ }
+}
 
 function buildAntigravityExtra(): Record<string, unknown> | undefined {
  const extra: Record<string, unknown> = {}
@@ -3413,6 +3473,7 @@ watch(
  // Clear model-related settings
  allowedModels.value = []
  modelMappings.value = []
+ openAICompactModelMappings.value = []
  // Antigravity: 默认使用映射模式并填充默认映射
  if (newPlatform === 'antigravity') {
  antigravityModelRestrictionMode.value = 'mapping'
@@ -3442,6 +3503,8 @@ watch(
  }
  if (newPlatform !== 'openai') {
  openaiPassthroughEnabled.value = false
+ openAICompactMode.value = 'auto'
+ openAICompactModelMappings.value = []
  openaiChatCompletionsNativeEnabled.value = false
  openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
  openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
@@ -3524,6 +3587,14 @@ const addModelMapping = () => {
 
 const removeModelMapping = (index: number) => {
  modelMappings.value.splice(index, 1)
+}
+
+const addOpenAICompactModelMapping = () => {
+ openAICompactModelMappings.value.push({ from: '', to: '' })
+}
+
+const removeOpenAICompactModelMapping = (index: number) => {
+ openAICompactModelMappings.value.splice(index, 1)
 }
 
 const addPresetMapping = (from: string, to: string) => {
@@ -3814,6 +3885,7 @@ const resetForm = () => {
  editWeeklyResetHour.value = null
  editResetTimezone.value = null
  modelMappings.value = []
+ openAICompactModelMappings.value = []
  modelRestrictionMode.value = 'whitelist'
  allowedModels.value = [...claudeModels] // Default fill related models
 
@@ -3830,6 +3902,7 @@ const resetForm = () => {
  interceptWarmupRequests.value = false
  autoPauseOnExpired.value = true
  openaiPassthroughEnabled.value = false
+ openAICompactMode.value = 'auto'
  openaiChatCompletionsNativeEnabled.value = false
  openaiOAuthResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
  openaiAPIKeyResponsesWebSocketV2Mode.value = OPENAI_WS_MODE_OFF
@@ -3913,6 +3986,11 @@ const buildOpenAIExtra = (base?: Record<string, unknown>): Record<string, unknow
  extra.codex_cli_only = true
  } else {
  delete extra.codex_cli_only
+ }
+ if (openAICompactMode.value !== 'auto') {
+ extra.openai_compact_mode = openAICompactMode.value
+ } else {
+ delete extra.openai_compact_mode
  }
 
  return Object.keys(extra).length > 0 ? extra : undefined
@@ -4126,6 +4204,9 @@ const handleSubmit = async () => {
  credentials.model_mapping = modelMapping
  }
  }
+ if (form.platform === 'openai') {
+ applyOpenAICompactModelMapping(credentials)
+ }
 
  // Add pool mode if enabled
  if (poolModeEnabled.value) {
@@ -4205,6 +4286,9 @@ const createAccountAndFinish = async (
 ) => {
  if (!applyTempUnschedConfig(credentials)) {
  return
+ }
+ if (platform === 'openai') {
+ applyOpenAICompactModelMapping(credentials)
  }
  // Inject quota limits for apikey/bedrock accounts
  let finalExtra = extra
@@ -4291,6 +4375,9 @@ const handleOpenAIExchange = async (authCode: string) => {
  if (modelMapping) {
  credentials.model_mapping = modelMapping
  }
+ }
+ if (shouldCreateOpenAI) {
+ applyOpenAICompactModelMapping(credentials)
  }
 
  // 应用临时不可调度配置
@@ -4383,6 +4470,9 @@ const handleOpenAIBatchRT = async (refreshTokenInput: string, clientId?: string)
  if (modelMapping) {
  credentials.model_mapping = modelMapping
  }
+ }
+ if (shouldCreateOpenAI) {
+ applyOpenAICompactModelMapping(credentials)
  }
 
  // Generate account name; fallback to email if name is empty (ent schema requires NotEmpty)

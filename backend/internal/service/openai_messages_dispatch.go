@@ -8,9 +8,30 @@ const (
 	defaultOpenAIMessagesDispatchHaikuMappedModel  = "gpt-5.4-mini"
 )
 
+type OpenAIMessagesDispatchModelResolution struct {
+	Model           string
+	ReasoningEffort string
+}
+
 func normalizeOpenAIMessagesDispatchMappedModel(model string) string {
-	model = NormalizeOpenAICompatRequestedModel(strings.TrimSpace(model))
 	return strings.TrimSpace(model)
+}
+
+func resolveOpenAIMessagesDispatchMappedTarget(target string) OpenAIMessagesDispatchModelResolution {
+	target = normalizeOpenAIMessagesDispatchMappedModel(target)
+	if target == "" {
+		return OpenAIMessagesDispatchModelResolution{}
+	}
+
+	normalizedModel, reasoningEffort := normalizeOpenAICompatResolvedModel(target)
+	if normalizedModel != target {
+		return OpenAIMessagesDispatchModelResolution{
+			Model:           normalizedModel,
+			ReasoningEffort: reasoningEffort,
+		}
+	}
+
+	return OpenAIMessagesDispatchModelResolution{Model: target}
 }
 
 func normalizeOpenAIMessagesDispatchModelConfig(cfg OpenAIMessagesDispatchModelConfig) OpenAIMessagesDispatchModelConfig {
@@ -56,37 +77,41 @@ func claudeMessagesDispatchFamily(model string) string {
 }
 
 func (g *Group) ResolveMessagesDispatchModel(requestedModel string) string {
+	return g.ResolveMessagesDispatchModelWithReasoning(requestedModel).Model
+}
+
+func (g *Group) ResolveMessagesDispatchModelWithReasoning(requestedModel string) OpenAIMessagesDispatchModelResolution {
 	if g == nil {
-		return ""
+		return OpenAIMessagesDispatchModelResolution{}
 	}
 	requestedModel = strings.TrimSpace(requestedModel)
 	if requestedModel == "" {
-		return ""
+		return OpenAIMessagesDispatchModelResolution{}
 	}
 
 	cfg := normalizeOpenAIMessagesDispatchModelConfig(g.MessagesDispatchModelConfig)
 	if mappedModel := strings.TrimSpace(cfg.ExactModelMappings[requestedModel]); mappedModel != "" {
-		return mappedModel
+		return resolveOpenAIMessagesDispatchMappedTarget(mappedModel)
 	}
 
 	switch claudeMessagesDispatchFamily(requestedModel) {
 	case "opus":
 		if mappedModel := strings.TrimSpace(cfg.OpusMappedModel); mappedModel != "" {
-			return mappedModel
+			return resolveOpenAIMessagesDispatchMappedTarget(mappedModel)
 		}
-		return defaultOpenAIMessagesDispatchOpusMappedModel
+		return resolveOpenAIMessagesDispatchMappedTarget(defaultOpenAIMessagesDispatchOpusMappedModel)
 	case "sonnet":
 		if mappedModel := strings.TrimSpace(cfg.SonnetMappedModel); mappedModel != "" {
-			return mappedModel
+			return resolveOpenAIMessagesDispatchMappedTarget(mappedModel)
 		}
-		return defaultOpenAIMessagesDispatchSonnetMappedModel
+		return resolveOpenAIMessagesDispatchMappedTarget(defaultOpenAIMessagesDispatchSonnetMappedModel)
 	case "haiku":
 		if mappedModel := strings.TrimSpace(cfg.HaikuMappedModel); mappedModel != "" {
-			return mappedModel
+			return resolveOpenAIMessagesDispatchMappedTarget(mappedModel)
 		}
-		return defaultOpenAIMessagesDispatchHaikuMappedModel
+		return resolveOpenAIMessagesDispatchMappedTarget(defaultOpenAIMessagesDispatchHaikuMappedModel)
 	default:
-		return ""
+		return OpenAIMessagesDispatchModelResolution{}
 	}
 }
 
