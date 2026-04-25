@@ -140,6 +140,20 @@ func (_c *ModelPricingCreate) SetNillableUpdatedAt(v *time.Time) *ModelPricingCr
 	return _c
 }
 
+// SetFastPriceMultiplier sets the "fast_price_multiplier" field.
+func (_c *ModelPricingCreate) SetFastPriceMultiplier(v float64) *ModelPricingCreate {
+	_c.mutation.SetFastPriceMultiplier(v)
+	return _c
+}
+
+// SetNillableFastPriceMultiplier sets the "fast_price_multiplier" field if the given value is not nil.
+func (_c *ModelPricingCreate) SetNillableFastPriceMultiplier(v *float64) *ModelPricingCreate {
+	if v != nil {
+		_c.SetFastPriceMultiplier(*v)
+	}
+	return _c
+}
+
 // Mutation returns the ModelPricingMutation object of the builder.
 func (_c *ModelPricingCreate) Mutation() *ModelPricingMutation {
 	return _c.mutation
@@ -277,6 +291,10 @@ func (_c *ModelPricingCreate) createSpec() (*ModelPricing, *sqlgraph.CreateSpec)
 	if value, ok := _c.mutation.UpdatedAt(); ok {
 		_spec.SetField(modelpricing.FieldUpdatedAt, field.TypeTime, value)
 		_node.UpdatedAt = value
+	}
+	if value, ok := _c.mutation.FastPriceMultiplier(); ok {
+		_spec.SetField(modelpricing.FieldFastPriceMultiplier, field.TypeFloat64, value)
+		_node.FastPriceMultiplier = &value
 	}
 	return _node, _spec
 }
@@ -471,6 +489,30 @@ func (u *ModelPricingUpsert) SetUpdatedAt(v time.Time) *ModelPricingUpsert {
 // UpdateUpdatedAt sets the "updated_at" field to the value that was provided on create.
 func (u *ModelPricingUpsert) UpdateUpdatedAt() *ModelPricingUpsert {
 	u.SetExcluded(modelpricing.FieldUpdatedAt)
+	return u
+}
+
+// SetFastPriceMultiplier sets the "fast_price_multiplier" field.
+func (u *ModelPricingUpsert) SetFastPriceMultiplier(v float64) *ModelPricingUpsert {
+	u.Set(modelpricing.FieldFastPriceMultiplier, v)
+	return u
+}
+
+// UpdateFastPriceMultiplier sets the "fast_price_multiplier" field to the value that was provided on create.
+func (u *ModelPricingUpsert) UpdateFastPriceMultiplier() *ModelPricingUpsert {
+	u.SetExcluded(modelpricing.FieldFastPriceMultiplier)
+	return u
+}
+
+// AddFastPriceMultiplier adds v to the "fast_price_multiplier" field.
+func (u *ModelPricingUpsert) AddFastPriceMultiplier(v float64) *ModelPricingUpsert {
+	u.Add(modelpricing.FieldFastPriceMultiplier, v)
+	return u
+}
+
+// ClearFastPriceMultiplier clears the value of the "fast_price_multiplier" field.
+func (u *ModelPricingUpsert) ClearFastPriceMultiplier() *ModelPricingUpsert {
+	u.SetNull(modelpricing.FieldFastPriceMultiplier)
 	return u
 }
 
@@ -684,6 +726,34 @@ func (u *ModelPricingUpsertOne) SetUpdatedAt(v time.Time) *ModelPricingUpsertOne
 func (u *ModelPricingUpsertOne) UpdateUpdatedAt() *ModelPricingUpsertOne {
 	return u.Update(func(s *ModelPricingUpsert) {
 		s.UpdateUpdatedAt()
+	})
+}
+
+// SetFastPriceMultiplier sets the "fast_price_multiplier" field.
+func (u *ModelPricingUpsertOne) SetFastPriceMultiplier(v float64) *ModelPricingUpsertOne {
+	return u.Update(func(s *ModelPricingUpsert) {
+		s.SetFastPriceMultiplier(v)
+	})
+}
+
+// AddFastPriceMultiplier adds v to the "fast_price_multiplier" field.
+func (u *ModelPricingUpsertOne) AddFastPriceMultiplier(v float64) *ModelPricingUpsertOne {
+	return u.Update(func(s *ModelPricingUpsert) {
+		s.AddFastPriceMultiplier(v)
+	})
+}
+
+// UpdateFastPriceMultiplier sets the "fast_price_multiplier" field to the value that was provided on create.
+func (u *ModelPricingUpsertOne) UpdateFastPriceMultiplier() *ModelPricingUpsertOne {
+	return u.Update(func(s *ModelPricingUpsert) {
+		s.UpdateFastPriceMultiplier()
+	})
+}
+
+// ClearFastPriceMultiplier clears the value of the "fast_price_multiplier" field.
+func (u *ModelPricingUpsertOne) ClearFastPriceMultiplier() *ModelPricingUpsertOne {
+	return u.Update(func(s *ModelPricingUpsert) {
+		s.ClearFastPriceMultiplier()
 	})
 }
 
@@ -1063,6 +1133,34 @@ func (u *ModelPricingUpsertBulk) SetUpdatedAt(v time.Time) *ModelPricingUpsertBu
 func (u *ModelPricingUpsertBulk) UpdateUpdatedAt() *ModelPricingUpsertBulk {
 	return u.Update(func(s *ModelPricingUpsert) {
 		s.UpdateUpdatedAt()
+	})
+}
+
+// SetFastPriceMultiplier sets the "fast_price_multiplier" field.
+func (u *ModelPricingUpsertBulk) SetFastPriceMultiplier(v float64) *ModelPricingUpsertBulk {
+	return u.Update(func(s *ModelPricingUpsert) {
+		s.SetFastPriceMultiplier(v)
+	})
+}
+
+// AddFastPriceMultiplier adds v to the "fast_price_multiplier" field.
+func (u *ModelPricingUpsertBulk) AddFastPriceMultiplier(v float64) *ModelPricingUpsertBulk {
+	return u.Update(func(s *ModelPricingUpsert) {
+		s.AddFastPriceMultiplier(v)
+	})
+}
+
+// UpdateFastPriceMultiplier sets the "fast_price_multiplier" field to the value that was provided on create.
+func (u *ModelPricingUpsertBulk) UpdateFastPriceMultiplier() *ModelPricingUpsertBulk {
+	return u.Update(func(s *ModelPricingUpsert) {
+		s.UpdateFastPriceMultiplier()
+	})
+}
+
+// ClearFastPriceMultiplier clears the value of the "fast_price_multiplier" field.
+func (u *ModelPricingUpsertBulk) ClearFastPriceMultiplier() *ModelPricingUpsertBulk {
+	return u.Update(func(s *ModelPricingUpsert) {
+		s.ClearFastPriceMultiplier()
 	})
 }
 

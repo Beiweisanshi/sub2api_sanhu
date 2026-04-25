@@ -34,8 +34,10 @@ type ModelPricing struct {
 	// CreatedAt holds the value of the "created_at" field.
 	CreatedAt time.Time `json:"created_at,omitempty"`
 	// UpdatedAt holds the value of the "updated_at" field.
-	UpdatedAt    time.Time `json:"updated_at,omitempty"`
-	selectValues sql.SelectValues
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+	// FastPriceMultiplier holds the value of the "fast_price_multiplier" field.
+	FastPriceMultiplier *float64 `json:"fast_price_multiplier,omitempty"`
+	selectValues        sql.SelectValues
 }
 
 // scanValues returns the types for scanning values from sql.Rows.
@@ -45,7 +47,7 @@ func (*ModelPricing) scanValues(columns []string) ([]any, error) {
 		switch columns[i] {
 		case modelpricing.FieldIsCustom:
 			values[i] = new(sql.NullBool)
-		case modelpricing.FieldInputCostPerToken, modelpricing.FieldOutputCostPerToken, modelpricing.FieldCacheReadInputTokenCost, modelpricing.FieldCacheCreationInputTokenCost:
+		case modelpricing.FieldInputCostPerToken, modelpricing.FieldOutputCostPerToken, modelpricing.FieldCacheReadInputTokenCost, modelpricing.FieldCacheCreationInputTokenCost, modelpricing.FieldFastPriceMultiplier:
 			values[i] = new(sql.NullFloat64)
 		case modelpricing.FieldID:
 			values[i] = new(sql.NullInt64)
@@ -132,6 +134,13 @@ func (_m *ModelPricing) assignValues(columns []string, values []any) error {
 			} else if value.Valid {
 				_m.UpdatedAt = value.Time
 			}
+		case modelpricing.FieldFastPriceMultiplier:
+			if value, ok := values[i].(*sql.NullFloat64); !ok {
+				return fmt.Errorf("unexpected type %T for field fast_price_multiplier", values[i])
+			} else if value.Valid {
+				_m.FastPriceMultiplier = new(float64)
+				*_m.FastPriceMultiplier = value.Float64
+			}
 		default:
 			_m.selectValues.Set(columns[i], values[i])
 		}
@@ -202,6 +211,11 @@ func (_m *ModelPricing) String() string {
 	builder.WriteString(", ")
 	builder.WriteString("updated_at=")
 	builder.WriteString(_m.UpdatedAt.Format(time.ANSIC))
+	builder.WriteString(", ")
+	if v := _m.FastPriceMultiplier; v != nil {
+		builder.WriteString("fast_price_multiplier=")
+		builder.WriteString(fmt.Sprintf("%v", *v))
+	}
 	builder.WriteByte(')')
 	return builder.String()
 }

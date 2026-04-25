@@ -654,6 +654,8 @@ var (
 		{Name: "require_privacy_set", Type: field.TypeBool, Default: false},
 		{Name: "default_mapped_model", Type: field.TypeString, Size: 100, Default: ""},
 		{Name: "messages_dispatch_model_config", Type: field.TypeJSON, SchemaType: map[string]string{"postgres": "jsonb"}},
+		{Name: "simulate_cache_enabled", Type: field.TypeBool, Default: false},
+		{Name: "simulate_cache_ratio", Type: field.TypeFloat64, Default: 0.7, SchemaType: map[string]string{"postgres": "decimal(5,4)"}},
 		{Name: "rpm_limit", Type: field.TypeInt, Default: 0},
 	}
 	// GroupsTable holds the schema information for the "groups" table.
@@ -787,6 +789,7 @@ var (
 		{Name: "note", Type: field.TypeString, Size: 2147483647, Default: ""},
 		{Name: "created_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
 		{Name: "updated_at", Type: field.TypeTime, SchemaType: map[string]string{"postgres": "timestamptz"}},
+		{Name: "fast_price_multiplier", Type: field.TypeFloat64, Nullable: true},
 	}
 	// ModelPricingsTable holds the schema information for the "model_pricings" table.
 	ModelPricingsTable = &schema.Table{

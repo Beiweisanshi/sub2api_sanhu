@@ -29,6 +29,7 @@ type modelPricingPriceFieldsResponse struct {
 	OutputCostPerToken          *float64 `json:"output_cost_per_token"`
 	CacheReadInputTokenCost     *float64 `json:"cache_read_input_token_cost"`
 	CacheCreationInputTokenCost *float64 `json:"cache_creation_input_token_cost"`
+	FastPriceMultiplier         *float64 `json:"fast_price_multiplier"`
 }
 
 type modelPricingItemResponse struct {
@@ -49,6 +50,7 @@ type modelPricingUpsertRequest struct {
 	OutputCostPerToken          *float64 `json:"output_cost_per_token" binding:"omitempty,min=0"`
 	CacheReadInputTokenCost     *float64 `json:"cache_read_input_token_cost" binding:"omitempty,min=0"`
 	CacheCreationInputTokenCost *float64 `json:"cache_creation_input_token_cost" binding:"omitempty,min=0"`
+	FastPriceMultiplier         *float64 `json:"fast_price_multiplier" binding:"omitempty,gt=0"`
 	Note                        string   `json:"note" binding:"omitempty,max=1000"`
 }
 
@@ -177,6 +179,7 @@ func requestToModelPricingOverride(modelName string, req modelPricingUpsertReque
 		OutputCostPerToken:          cloneRequestFloat(req.OutputCostPerToken),
 		CacheReadInputTokenCost:     cloneRequestFloat(req.CacheReadInputTokenCost),
 		CacheCreationInputTokenCost: cloneRequestFloat(req.CacheCreationInputTokenCost),
+		FastPriceMultiplier:         cloneRequestFloat(req.FastPriceMultiplier),
 		IsCustom:                    isCustom,
 		Note:                        strings.TrimSpace(req.Note),
 	}
@@ -216,6 +219,7 @@ func pricingToPriceFields(pricing *service.LiteLLMModelPricing) modelPricingPric
 		OutputCostPerToken:          floatPtr(pricing.OutputCostPerToken),
 		CacheReadInputTokenCost:     floatPtr(pricing.CacheReadInputTokenCost),
 		CacheCreationInputTokenCost: floatPtr(pricing.CacheCreationInputTokenCost),
+		FastPriceMultiplier:         positiveFloatPtr(pricing.FastPriceMultiplier),
 	}
 }
 
@@ -236,12 +240,20 @@ func overrideToNullablePriceFields(override *service.ModelPricingOverride) *mode
 		OutputCostPerToken:          cloneRequestFloat(override.OutputCostPerToken),
 		CacheReadInputTokenCost:     cloneRequestFloat(override.CacheReadInputTokenCost),
 		CacheCreationInputTokenCost: cloneRequestFloat(override.CacheCreationInputTokenCost),
+		FastPriceMultiplier:         cloneRequestFloat(override.FastPriceMultiplier),
 	}
 }
 
 func floatPtr(value float64) *float64 {
 	v := value
 	return &v
+}
+
+func positiveFloatPtr(value float64) *float64 {
+	if value <= 0 {
+		return nil
+	}
+	return floatPtr(value)
 }
 
 func cloneRequestFloat(value *float64) *float64 {

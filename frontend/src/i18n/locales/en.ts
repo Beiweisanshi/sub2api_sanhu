@@ -2134,6 +2134,7 @@ export default {
         output: 'Output',
         cacheRead: 'Cache Read',
         cacheWrite: 'Cache Write',
+        fastMultiplier: 'Fast Multiplier',
         source: 'Source'
       },
       source: {

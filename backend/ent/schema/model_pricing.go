@@ -56,6 +56,9 @@ func (ModelPricing) Fields() []ent.Field {
 			Default(time.Now).
 			UpdateDefault(time.Now).
 			SchemaType(map[string]string{dialect.Postgres: "timestamptz"}),
+		field.Float("fast_price_multiplier").
+			Optional().
+			Nillable(),
 	}
 }
 

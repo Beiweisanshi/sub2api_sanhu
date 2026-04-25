@@ -99,6 +99,11 @@ func UpdatedAt(v time.Time) predicate.ModelPricing {
 	return predicate.ModelPricing(sql.FieldEQ(FieldUpdatedAt, v))
 }
 
+// FastPriceMultiplier applies equality check predicate on the "fast_price_multiplier" field. It's identical to FastPriceMultiplierEQ.
+func FastPriceMultiplier(v float64) predicate.ModelPricing {
+	return predicate.ModelPricing(sql.FieldEQ(FieldFastPriceMultiplier, v))
+}
+
 // ModelNameEQ applies the EQ predicate on the "model_name" field.
 func ModelNameEQ(v string) predicate.ModelPricing {
 	return predicate.ModelPricing(sql.FieldEQ(FieldModelName, v))
@@ -517,6 +522,56 @@ func UpdatedAtLT(v time.Time) predicate.ModelPricing {
 // UpdatedAtLTE applies the LTE predicate on the "updated_at" field.
 func UpdatedAtLTE(v time.Time) predicate.ModelPricing {
 	return predicate.ModelPricing(sql.FieldLTE(FieldUpdatedAt, v))
+}
+
+// FastPriceMultiplierEQ applies the EQ predicate on the "fast_price_multiplier" field.
+func FastPriceMultiplierEQ(v float64) predicate.ModelPricing {
+	return predicate.ModelPricing(sql.FieldEQ(FieldFastPriceMultiplier, v))
+}
+
+// FastPriceMultiplierNEQ applies the NEQ predicate on the "fast_price_multiplier" field.
+func FastPriceMultiplierNEQ(v float64) predicate.ModelPricing {
+	return predicate.ModelPricing(sql.FieldNEQ(FieldFastPriceMultiplier, v))
+}
+
+// FastPriceMultiplierIn applies the In predicate on the "fast_price_multiplier" field.
+func FastPriceMultiplierIn(vs ...float64) predicate.ModelPricing {
+	return predicate.ModelPricing(sql.FieldIn(FieldFastPriceMultiplier, vs...))
+}
+
+// FastPriceMultiplierNotIn applies the NotIn predicate on the "fast_price_multiplier" field.
+func FastPriceMultiplierNotIn(vs ...float64) predicate.ModelPricing {
+	return predicate.ModelPricing(sql.FieldNotIn(FieldFastPriceMultiplier, vs...))
+}
+
+// FastPriceMultiplierGT applies the GT predicate on the "fast_price_multiplier" field.
+func FastPriceMultiplierGT(v float64) predicate.ModelPricing {
+	return predicate.ModelPricing(sql.FieldGT(FieldFastPriceMultiplier, v))
+}
+
+// FastPriceMultiplierGTE applies the GTE predicate on the "fast_price_multiplier" field.
+func FastPriceMultiplierGTE(v float64) predicate.ModelPricing {
+	return predicate.ModelPricing(sql.FieldGTE(FieldFastPriceMultiplier, v))
+}
+
+// FastPriceMultiplierLT applies the LT predicate on the "fast_price_multiplier" field.
+func FastPriceMultiplierLT(v float64) predicate.ModelPricing {
+	return predicate.ModelPricing(sql.FieldLT(FieldFastPriceMultiplier, v))
+}
+
+// FastPriceMultiplierLTE applies the LTE predicate on the "fast_price_multiplier" field.
+func FastPriceMultiplierLTE(v float64) predicate.ModelPricing {
+	return predicate.ModelPricing(sql.FieldLTE(FieldFastPriceMultiplier, v))
+}
+
+// FastPriceMultiplierIsNil applies the IsNil predicate on the "fast_price_multiplier" field.
+func FastPriceMultiplierIsNil() predicate.ModelPricing {
+	return predicate.ModelPricing(sql.FieldIsNull(FieldFastPriceMultiplier))
+}
+
+// FastPriceMultiplierNotNil applies the NotNil predicate on the "fast_price_multiplier" field.
+func FastPriceMultiplierNotNil() predicate.ModelPricing {
+	return predicate.ModelPricing(sql.FieldNotNull(FieldFastPriceMultiplier))
 }
 
 // And groups predicates with the AND operator between them.

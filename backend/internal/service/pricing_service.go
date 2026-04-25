@@ -117,6 +117,7 @@ type ModelPricingOverride struct {
 	OutputCostPerToken          *float64
 	CacheReadInputTokenCost     *float64
 	CacheCreationInputTokenCost *float64
+	FastPriceMultiplier         *float64
 	IsCustom                    bool
 	Note                        string
 	CreatedAt                   time.Time
@@ -246,6 +247,10 @@ func (s *PricingService) parsePricingData(body []byte) (map[string]*LiteLLMModel
 		}
 		if entry.CacheReadInputTokenCostPriority != nil {
 			pricing.CacheReadInputTokenCostPriority = *entry.CacheReadInputTokenCostPriority
+		}
+		if entry.FastPriceMultiplier != nil {
+			pricing.FastPriceMultiplier = *entry.FastPriceMultiplier
+			applyFastPriceMultiplier(pricing)
 		}
 		if entry.OutputCostPerImage != nil {
 			pricing.OutputCostPerImage = *entry.OutputCostPerImage
@@ -409,7 +414,26 @@ func applyModelPricingOverride(base *LiteLLMModelPricing, override *ModelPricing
 	if override.CacheCreationInputTokenCost != nil {
 		pricing.CacheCreationInputTokenCost = *override.CacheCreationInputTokenCost
 	}
+	if override.FastPriceMultiplier != nil {
+		pricing.FastPriceMultiplier = *override.FastPriceMultiplier
+	}
+	applyFastPriceMultiplier(pricing)
 	return pricing
+}
+
+func applyFastPriceMultiplier(pricing *LiteLLMModelPricing) {
+	if pricing == nil || pricing.FastPriceMultiplier <= 0 {
+		return
+	}
+	if pricing.InputCostPerToken > 0 {
+		pricing.InputCostPerTokenPriority = pricing.InputCostPerToken * pricing.FastPriceMultiplier
+	}
+	if pricing.OutputCostPerToken > 0 {
+		pricing.OutputCostPerTokenPriority = pricing.OutputCostPerToken * pricing.FastPriceMultiplier
+	}
+	if pricing.CacheReadInputTokenCost > 0 {
+		pricing.CacheReadInputTokenCostPriority = pricing.CacheReadInputTokenCost * pricing.FastPriceMultiplier
+	}
 }
 
 func clonePricingMap(source map[string]*LiteLLMModelPricing) map[string]*LiteLLMModelPricing {
@@ -437,6 +461,7 @@ func cloneModelPricingOverride(override *ModelPricingOverride) *ModelPricingOver
 	clone.OutputCostPerToken = cloneFloat64Ptr(override.OutputCostPerToken)
 	clone.CacheReadInputTokenCost = cloneFloat64Ptr(override.CacheReadInputTokenCost)
 	clone.CacheCreationInputTokenCost = cloneFloat64Ptr(override.CacheCreationInputTokenCost)
+	clone.FastPriceMultiplier = cloneFloat64Ptr(override.FastPriceMultiplier)
 	return &clone
 }
 

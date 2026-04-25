@@ -31,6 +31,8 @@ const (
 	FieldCreatedAt = "created_at"
 	// FieldUpdatedAt holds the string denoting the updated_at field in the database.
 	FieldUpdatedAt = "updated_at"
+	// FieldFastPriceMultiplier holds the string denoting the fast_price_multiplier field in the database.
+	FieldFastPriceMultiplier = "fast_price_multiplier"
 	// Table holds the table name of the modelpricing in the database.
 	Table = "model_pricings"
 )
@@ -47,6 +49,7 @@ var Columns = []string{
 	FieldNote,
 	FieldCreatedAt,
 	FieldUpdatedAt,
+	FieldFastPriceMultiplier,
 }
 
 // ValidColumn reports if the column name is valid (part of the table columns).
@@ -125,4 +128,9 @@ func ByCreatedAt(opts ...sql.OrderTermOption) OrderOption {
 // ByUpdatedAt orders the results by the updated_at field.
 func ByUpdatedAt(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldUpdatedAt, opts...).ToFunc()
+}
+
+// ByFastPriceMultiplier orders the results by the fast_price_multiplier field.
+func ByFastPriceMultiplier(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldFastPriceMultiplier, opts...).ToFunc()
 }

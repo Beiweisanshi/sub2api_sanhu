@@ -35,6 +35,32 @@ func TestParsePricingData_ParsesPriorityAndServiceTierFields(t *testing.T) {
 	require.True(t, pricing.SupportsServiceTier)
 }
 
+func TestParsePricingData_FastPriceMultiplierDerivesPriorityPrices(t *testing.T) {
+	svc := &PricingService{}
+	body := []byte(`{
+		"gpt-5.5": {
+			"input_cost_per_token": 0.000005,
+			"input_cost_per_token_priority": 0.0000125,
+			"output_cost_per_token": 0.00003,
+			"output_cost_per_token_priority": 0.000075,
+			"cache_read_input_token_cost": 0.0000005,
+			"cache_read_input_token_cost_priority": 0.00000125,
+			"fast_price_multiplier": 2,
+			"litellm_provider": "openai",
+			"mode": "chat"
+		}
+	}`)
+
+	data, err := svc.parsePricingData(body)
+	require.NoError(t, err)
+	pricing := data["gpt-5.5"]
+	require.NotNil(t, pricing)
+	require.InDelta(t, 2.0, pricing.FastPriceMultiplier, 1e-12)
+	require.InDelta(t, 1e-5, pricing.InputCostPerTokenPriority, 1e-12)
+	require.InDelta(t, 6e-5, pricing.OutputCostPerTokenPriority, 1e-12)
+	require.InDelta(t, 1e-6, pricing.CacheReadInputTokenCostPriority, 1e-12)
+}
+
 func TestGetModelPricing_Gpt53CodexSparkUsesGpt51CodexPricing(t *testing.T) {
 	sparkPricing := &LiteLLMModelPricing{InputCostPerToken: 1}
 	gpt53Pricing := &LiteLLMModelPricing{InputCostPerToken: 9}
@@ -79,6 +105,24 @@ func TestGetModelPricing_OpenAIFallbackMatchedLoggedAsInfo(t *testing.T) {
 
 	require.True(t, logSink.ContainsMessageAtLevel("[Pricing] OpenAI fallback matched gpt-5.3-codex -> gpt-5.2-codex", "info"))
 	require.False(t, logSink.ContainsMessageAtLevel("[Pricing] OpenAI fallback matched gpt-5.3-codex -> gpt-5.2-codex", "warn"))
+}
+
+func TestGetModelPricing_Gpt55UsesStaticFallbackWithFastMultiplierWhenRemoteMissing(t *testing.T) {
+	svc := &PricingService{
+		pricingData: map[string]*LiteLLMModelPricing{
+			"gpt-5.1-codex": {InputCostPerToken: 1.25e-6},
+		},
+	}
+
+	got := svc.GetModelPricing("gpt-5.5")
+	require.NotNil(t, got)
+	require.InDelta(t, 5e-6, got.InputCostPerToken, 1e-12)
+	require.InDelta(t, 1e-5, got.InputCostPerTokenPriority, 1e-12)
+	require.InDelta(t, 3e-5, got.OutputCostPerToken, 1e-12)
+	require.InDelta(t, 6e-5, got.OutputCostPerTokenPriority, 1e-12)
+	require.InDelta(t, 5e-7, got.CacheReadInputTokenCost, 1e-12)
+	require.InDelta(t, 1e-6, got.CacheReadInputTokenCostPriority, 1e-12)
+	require.InDelta(t, 2.0, got.FastPriceMultiplier, 1e-12)
 }
 
 func TestGetModelPricing_Gpt54UsesStaticFallbackWhenRemoteMissing(t *testing.T) {

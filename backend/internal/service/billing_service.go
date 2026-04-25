@@ -50,6 +50,7 @@ type ModelPricing struct {
 	CacheCreationPricePerToken     float64 // 缓存创建每token价格 (USD)
 	CacheReadPricePerToken         float64 // 缓存读取每token价格 (USD)
 	CacheReadPricePerTokenPriority float64 // priority service tier 下缓存读取每token价格 (USD)
+	FastPriceMultiplier            float64 // fast/priority service tier 下整体价格倍率
 	CacheCreation5mPrice           float64 // 5分钟缓存创建每token价格 (USD)
 	CacheCreation1hPrice           float64 // 1小时缓存创建每token价格 (USD)
 	SupportsCacheBreakdown         bool    // 是否支持详细的缓存分类
@@ -217,15 +218,16 @@ func (s *BillingService) initFallbackPricing() {
 		LongContextInputMultiplier:     openAIGPT54LongContextInputMultiplier,
 		LongContextOutputMultiplier:    openAIGPT54LongContextOutputMultiplier,
 	}
-	// GPT-5.5 独立定价，Fast 模式 2.5x
+	// GPT-5.5 独立定价，Fast 模式 2x
 	s.fallbackPrices["gpt-5.5"] = &ModelPricing{
-		InputPricePerToken:             5e-6,    // $5 per MTok
-		InputPricePerTokenPriority:     12.5e-6, // $12.5 per MTok (2.5x)
-		OutputPricePerToken:            30e-6,   // $30 per MTok
-		OutputPricePerTokenPriority:    75e-6,   // $75 per MTok (2.5x)
-		CacheCreationPricePerToken:     5e-6,    // $5 per MTok
-		CacheReadPricePerToken:         0.5e-6,  // $0.5 per MTok
-		CacheReadPricePerTokenPriority: 1.25e-6, // $1.25 per MTok (2.5x)
+		InputPricePerToken:             5e-6,   // $5 per MTok
+		InputPricePerTokenPriority:     10e-6,  // $10 per MTok (2x)
+		OutputPricePerToken:            30e-6,  // $30 per MTok
+		OutputPricePerTokenPriority:    60e-6,  // $60 per MTok (2x)
+		CacheCreationPricePerToken:     5e-6,   // $5 per MTok
+		CacheReadPricePerToken:         0.5e-6, // $0.5 per MTok
+		CacheReadPricePerTokenPriority: 1e-6,   // $1 per MTok (2x)
+		FastPriceMultiplier:            2.0,
 		SupportsCacheBreakdown:         false,
 		LongContextInputThreshold:      openAIGPT54LongContextInputThreshold,
 		LongContextInputMultiplier:     openAIGPT54LongContextInputMultiplier,
@@ -342,6 +344,7 @@ func (s *BillingService) GetModelPricing(model string) (*ModelPricing, error) {
 				CacheCreationPricePerToken:     litellmPricing.CacheCreationInputTokenCost,
 				CacheReadPricePerToken:         litellmPricing.CacheReadInputTokenCost,
 				CacheReadPricePerTokenPriority: litellmPricing.CacheReadInputTokenCostPriority,
+				FastPriceMultiplier:            litellmPricing.FastPriceMultiplier,
 				CacheCreation5mPrice:           price5m,
 				CacheCreation1hPrice:           price1h,
 				SupportsCacheBreakdown:         enableBreakdown,
@@ -485,7 +488,9 @@ func (s *BillingService) computeTokenBreakdown(
 	cacheReadPrice := pricing.CacheReadPricePerToken
 	tierMultiplier := 1.0
 
-	if usePriorityServiceTierPricing(serviceTier, pricing) {
+	if normalizeBillingServiceTier(serviceTier) == "priority" && pricing.FastPriceMultiplier > 0 {
+		tierMultiplier = pricing.FastPriceMultiplier
+	} else if usePriorityServiceTierPricing(serviceTier, pricing) {
 		if pricing.InputPricePerTokenPriority > 0 {
 			inputPrice = pricing.InputPricePerTokenPriority
 		}

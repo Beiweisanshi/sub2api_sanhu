@@ -5,6 +5,7 @@ export interface PriceFields {
   output_cost_per_token: number | null
   cache_read_input_token_cost: number | null
   cache_creation_input_token_cost: number | null
+  fast_price_multiplier: number | null
 }
 
 export interface ModelPricingItem {

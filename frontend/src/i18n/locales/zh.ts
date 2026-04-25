@@ -2211,6 +2211,7 @@ export default {
         output: '输出',
         cacheRead: '缓存读',
         cacheWrite: '缓存写',
+        fastMultiplier: 'Fast 倍率',
         source: '来源'
       },
       source: {

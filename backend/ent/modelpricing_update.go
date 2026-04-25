@@ -184,6 +184,33 @@ func (_u *ModelPricingUpdate) SetUpdatedAt(v time.Time) *ModelPricingUpdate {
 	return _u
 }
 
+// SetFastPriceMultiplier sets the "fast_price_multiplier" field.
+func (_u *ModelPricingUpdate) SetFastPriceMultiplier(v float64) *ModelPricingUpdate {
+	_u.mutation.ResetFastPriceMultiplier()
+	_u.mutation.SetFastPriceMultiplier(v)
+	return _u
+}
+
+// SetNillableFastPriceMultiplier sets the "fast_price_multiplier" field if the given value is not nil.
+func (_u *ModelPricingUpdate) SetNillableFastPriceMultiplier(v *float64) *ModelPricingUpdate {
+	if v != nil {
+		_u.SetFastPriceMultiplier(*v)
+	}
+	return _u
+}
+
+// AddFastPriceMultiplier adds value to the "fast_price_multiplier" field.
+func (_u *ModelPricingUpdate) AddFastPriceMultiplier(v float64) *ModelPricingUpdate {
+	_u.mutation.AddFastPriceMultiplier(v)
+	return _u
+}
+
+// ClearFastPriceMultiplier clears the value of the "fast_price_multiplier" field.
+func (_u *ModelPricingUpdate) ClearFastPriceMultiplier() *ModelPricingUpdate {
+	_u.mutation.ClearFastPriceMultiplier()
+	return _u
+}
+
 // Mutation returns the ModelPricingMutation object of the builder.
 func (_u *ModelPricingUpdate) Mutation() *ModelPricingMutation {
 	return _u.mutation
@@ -294,6 +321,15 @@ func (_u *ModelPricingUpdate) sqlSave(ctx context.Context) (_node int, err error
 	}
 	if value, ok := _u.mutation.UpdatedAt(); ok {
 		_spec.SetField(modelpricing.FieldUpdatedAt, field.TypeTime, value)
+	}
+	if value, ok := _u.mutation.FastPriceMultiplier(); ok {
+		_spec.SetField(modelpricing.FieldFastPriceMultiplier, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedFastPriceMultiplier(); ok {
+		_spec.AddField(modelpricing.FieldFastPriceMultiplier, field.TypeFloat64, value)
+	}
+	if _u.mutation.FastPriceMultiplierCleared() {
+		_spec.ClearField(modelpricing.FieldFastPriceMultiplier, field.TypeFloat64)
 	}
 	if _node, err = sqlgraph.UpdateNodes(ctx, _u.driver, _spec); err != nil {
 		if _, ok := err.(*sqlgraph.NotFoundError); ok {
@@ -471,6 +507,33 @@ func (_u *ModelPricingUpdateOne) SetUpdatedAt(v time.Time) *ModelPricingUpdateOn
 	return _u
 }
 
+// SetFastPriceMultiplier sets the "fast_price_multiplier" field.
+func (_u *ModelPricingUpdateOne) SetFastPriceMultiplier(v float64) *ModelPricingUpdateOne {
+	_u.mutation.ResetFastPriceMultiplier()
+	_u.mutation.SetFastPriceMultiplier(v)
+	return _u
+}
+
+// SetNillableFastPriceMultiplier sets the "fast_price_multiplier" field if the given value is not nil.
+func (_u *ModelPricingUpdateOne) SetNillableFastPriceMultiplier(v *float64) *ModelPricingUpdateOne {
+	if v != nil {
+		_u.SetFastPriceMultiplier(*v)
+	}
+	return _u
+}
+
+// AddFastPriceMultiplier adds value to the "fast_price_multiplier" field.
+func (_u *ModelPricingUpdateOne) AddFastPriceMultiplier(v float64) *ModelPricingUpdateOne {
+	_u.mutation.AddFastPriceMultiplier(v)
+	return _u
+}
+
+// ClearFastPriceMultiplier clears the value of the "fast_price_multiplier" field.
+func (_u *ModelPricingUpdateOne) ClearFastPriceMultiplier() *ModelPricingUpdateOne {
+	_u.mutation.ClearFastPriceMultiplier()
+	return _u
+}
+
 // Mutation returns the ModelPricingMutation object of the builder.
 func (_u *ModelPricingUpdateOne) Mutation() *ModelPricingMutation {
 	return _u.mutation
@@ -611,6 +674,15 @@ func (_u *ModelPricingUpdateOne) sqlSave(ctx context.Context) (_node *ModelPrici
 	}
 	if value, ok := _u.mutation.UpdatedAt(); ok {
 		_spec.SetField(modelpricing.FieldUpdatedAt, field.TypeTime, value)
+	}
+	if value, ok := _u.mutation.FastPriceMultiplier(); ok {
+		_spec.SetField(modelpricing.FieldFastPriceMultiplier, field.TypeFloat64, value)
+	}
+	if value, ok := _u.mutation.AddedFastPriceMultiplier(); ok {
+		_spec.AddField(modelpricing.FieldFastPriceMultiplier, field.TypeFloat64, value)
+	}
+	if _u.mutation.FastPriceMultiplierCleared() {
+		_spec.ClearField(modelpricing.FieldFastPriceMultiplier, field.TypeFloat64)
 	}
 	_node = &ModelPricing{config: _u.config}
 	_spec.Assign = _node.assignValues
