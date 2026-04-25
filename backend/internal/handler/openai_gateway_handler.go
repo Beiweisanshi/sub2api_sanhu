@@ -176,6 +176,11 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	}
 	reqStream := streamResult.Bool()
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
+
+	if h.routeOpenAIImageCompat(c, body, openAIImageCompatSourceResponses, reqModel, reqLog, h.errorResponse) {
+		return
+	}
+
 	previousResponseID := strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String())
 	if previousResponseID != "" {
 		previousResponseIDKind := service.ClassifyOpenAIPreviousResponseIDKind(previousResponseID)
@@ -577,13 +582,18 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 	reqModel := modelResult.String()
+	reqStream := gjson.GetBytes(body, "stream").Bool()
+
+	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
+
+	if h.routeOpenAIImageCompat(c, body, openAIImageCompatSourceMessages, reqModel, reqLog, h.anthropicErrorResponse) {
+		return
+	}
+
 	routingModel := service.NormalizeOpenAICompatRequestedModel(reqModel)
 	preferredModelResolution := resolveOpenAIMessagesDispatchModelResolution(apiKey, reqModel)
 	preferredMappedModel := strings.TrimSpace(preferredModelResolution.Model)
 	preferredReasoningEffort := strings.TrimSpace(preferredModelResolution.ReasoningEffort)
-	reqStream := gjson.GetBytes(body, "stream").Bool()
-
-	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
 
 	setOpsRequestContext(c, reqModel, reqStream, body)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))

@@ -77,6 +77,10 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 
 	reqLog = reqLog.With(zap.String("model", reqModel), zap.Bool("stream", reqStream))
 
+	if h.routeOpenAIImageCompat(c, body, openAIImageCompatSourceChatCompletions, reqModel, reqLog, h.errorResponse) {
+		return
+	}
+
 	setOpsRequestContext(c, reqModel, reqStream, body)
 	setOpsEndpointContext(c, "", int16(service.RequestTypeFromLegacy(reqStream, false)))
 
