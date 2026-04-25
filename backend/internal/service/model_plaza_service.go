@@ -10,7 +10,10 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service/plazamodels"
 )
 
-const perMillionTokens = 1_000_000
+const (
+	perMillionTokens               = 1_000_000
+	defaultImageOutputPricePerUnit = 0.134
+)
 
 type PlazaModelPrice struct {
 	InputPerMTok             float64 `json:"input_per_mtok"`
@@ -20,6 +23,9 @@ type PlazaModelPrice struct {
 	OutputPriorityPerMTok    float64 `json:"output_priority_per_mtok,omitempty"`
 	CacheReadPriorityPerMTok float64 `json:"cache_read_priority_per_mtok,omitempty"`
 	OutputImagePerImage      float64 `json:"output_image_per_image,omitempty"`
+	OutputImage1KPerImage    float64 `json:"output_image_1k_per_image"`
+	OutputImage2KPerImage    float64 `json:"output_image_2k_per_image"`
+	OutputImage4KPerImage    float64 `json:"output_image_4k_per_image"`
 }
 
 type PlazaModel struct {
@@ -131,7 +137,7 @@ func (s *ModelPlazaService) buildModels(ctx context.Context, group Group, multip
 		if pricing == nil {
 			continue
 		}
-		original := plazaPriceFromPricing(pricing)
+		original := plazaPriceFromPricing(pricing, group)
 		models = append(models, PlazaModel{
 			Name:     name,
 			Mode:     pricing.Mode,
@@ -223,15 +229,52 @@ func resolvePlazaModelNames(platform string, scopes []string) []string {
 	return out
 }
 
-func plazaPriceFromPricing(pricing *LiteLLMModelPricing) PlazaModelPrice {
-	return PlazaModelPrice{
+func plazaPriceFromPricing(pricing *LiteLLMModelPricing, group Group) PlazaModelPrice {
+	price := PlazaModelPrice{
 		InputPerMTok:             pricing.InputCostPerToken * perMillionTokens,
 		OutputPerMTok:            pricing.OutputCostPerToken * perMillionTokens,
 		CacheReadPerMTok:         pricing.CacheReadInputTokenCost * perMillionTokens,
 		InputPriorityPerMTok:     pricing.InputCostPerTokenPriority * perMillionTokens,
 		OutputPriorityPerMTok:    pricing.OutputCostPerTokenPriority * perMillionTokens,
 		CacheReadPriorityPerMTok: pricing.CacheReadInputTokenCostPriority * perMillionTokens,
-		OutputImagePerImage:      pricing.OutputCostPerImage,
+	}
+	if isPlazaImagePricing(pricing) {
+		applyPlazaImagePrices(&price, pricing, group)
+	}
+	return price
+}
+
+func isPlazaImagePricing(pricing *LiteLLMModelPricing) bool {
+	if pricing == nil {
+		return false
+	}
+	return pricing.OutputCostPerImage > 0 || strings.Contains(strings.ToLower(pricing.Mode), "image")
+}
+
+func applyPlazaImagePrices(price *PlazaModelPrice, pricing *LiteLLMModelPricing, group Group) {
+	price.OutputImage1KPerImage = plazaImagePriceForSize(pricing, group, "1K")
+	price.OutputImage2KPerImage = plazaImagePriceForSize(pricing, group, "2K")
+	price.OutputImage4KPerImage = plazaImagePriceForSize(pricing, group, "4K")
+	price.OutputImagePerImage = price.OutputImage1KPerImage
+}
+
+func plazaImagePriceForSize(pricing *LiteLLMModelPricing, group Group, imageSize string) float64 {
+	if configured := group.GetImagePrice(imageSize); configured != nil {
+		return *configured
+	}
+
+	basePrice := pricing.OutputCostPerImage
+	if basePrice <= 0 {
+		basePrice = defaultImageOutputPricePerUnit
+	}
+
+	switch imageSize {
+	case "2K":
+		return basePrice * 1.5
+	case "4K":
+		return basePrice * 2
+	default:
+		return basePrice
 	}
 }
 
@@ -244,5 +287,8 @@ func multiplyPlazaPrice(price PlazaModelPrice, multiplier float64) PlazaModelPri
 		OutputPriorityPerMTok:    price.OutputPriorityPerMTok * multiplier,
 		CacheReadPriorityPerMTok: price.CacheReadPriorityPerMTok * multiplier,
 		OutputImagePerImage:      price.OutputImagePerImage * multiplier,
+		OutputImage1KPerImage:    price.OutputImage1KPerImage * multiplier,
+		OutputImage2KPerImage:    price.OutputImage2KPerImage * multiplier,
+		OutputImage4KPerImage:    price.OutputImage4KPerImage * multiplier,
 	}
 }

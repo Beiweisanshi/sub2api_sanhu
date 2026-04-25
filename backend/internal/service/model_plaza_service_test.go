@@ -86,24 +86,67 @@ func TestModelPlazaBuildUserPlaza_MultiplierAndPriceMath(t *testing.T) {
 	model := group.Models[0]
 	require.Equal(t, "gemini-2.5-flash-image", model.Name)
 	require.Equal(t, "image_generation", model.Mode)
-	require.Equal(t, PlazaModelPrice{
-		InputPerMTok:             1,
-		OutputPerMTok:            2,
-		CacheReadPerMTok:         0.5,
-		InputPriorityPerMTok:     3,
-		OutputPriorityPerMTok:    4,
-		CacheReadPriorityPerMTok: 0.75,
-		OutputImagePerImage:      0.04,
-	}, model.Original)
-	require.Equal(t, PlazaModelPrice{
-		InputPerMTok:             2,
-		OutputPerMTok:            4,
-		CacheReadPerMTok:         1,
-		InputPriorityPerMTok:     6,
-		OutputPriorityPerMTok:    8,
-		CacheReadPriorityPerMTok: 1.5,
-		OutputImagePerImage:      0.08,
-	}, model.Actual)
+	require.Equal(t, 1.0, model.Original.InputPerMTok)
+	require.Equal(t, 2.0, model.Original.OutputPerMTok)
+	require.Equal(t, 0.5, model.Original.CacheReadPerMTok)
+	require.Equal(t, 3.0, model.Original.InputPriorityPerMTok)
+	require.Equal(t, 4.0, model.Original.OutputPriorityPerMTok)
+	require.Equal(t, 0.75, model.Original.CacheReadPriorityPerMTok)
+	require.InDelta(t, 0.04, model.Original.OutputImagePerImage, 1e-12)
+	require.InDelta(t, 0.04, model.Original.OutputImage1KPerImage, 1e-12)
+	require.InDelta(t, 0.06, model.Original.OutputImage2KPerImage, 1e-12)
+	require.InDelta(t, 0.08, model.Original.OutputImage4KPerImage, 1e-12)
+	require.Equal(t, 2.0, model.Actual.InputPerMTok)
+	require.Equal(t, 4.0, model.Actual.OutputPerMTok)
+	require.Equal(t, 1.0, model.Actual.CacheReadPerMTok)
+	require.Equal(t, 6.0, model.Actual.InputPriorityPerMTok)
+	require.Equal(t, 8.0, model.Actual.OutputPriorityPerMTok)
+	require.Equal(t, 1.5, model.Actual.CacheReadPriorityPerMTok)
+	require.InDelta(t, 0.08, model.Actual.OutputImagePerImage, 1e-12)
+	require.InDelta(t, 0.08, model.Actual.OutputImage1KPerImage, 1e-12)
+	require.InDelta(t, 0.12, model.Actual.OutputImage2KPerImage, 1e-12)
+	require.InDelta(t, 0.16, model.Actual.OutputImage4KPerImage, 1e-12)
+}
+
+func TestModelPlazaBuildUserPlaza_UsesGroupImagePricing(t *testing.T) {
+	price1K := 0.10
+	price2K := 0.15
+	price4K := 0.30
+	svc := newModelPlazaService(
+		fakePlazaGroupLister{
+			groups: []Group{{
+				ID:                   12,
+				Name:                 "Custom Images",
+				Platform:             domain.PlatformGemini,
+				RateMultiplier:       2,
+				ImagePrice1K:         &price1K,
+				ImagePrice2K:         &price2K,
+				ImagePrice4K:         &price4K,
+				SupportedModelScopes: []string{"gemini_image"},
+			}},
+			rates: map[int64]float64{},
+		},
+		nil,
+		fakePlazaPricingGetter{prices: map[string]*LiteLLMModelPricing{
+			"gemini-2.5-flash-image": {
+				OutputCostPerImage: 0.04,
+				Mode:               "image_generation",
+			},
+		}},
+	)
+
+	got, err := svc.BuildUserPlaza(context.Background(), 1001)
+	require.NoError(t, err)
+	require.Len(t, got.Groups, 1)
+	require.Len(t, got.Groups[0].Models, 1)
+
+	model := got.Groups[0].Models[0]
+	require.InDelta(t, 0.10, model.Original.OutputImage1KPerImage, 1e-12)
+	require.InDelta(t, 0.15, model.Original.OutputImage2KPerImage, 1e-12)
+	require.InDelta(t, 0.30, model.Original.OutputImage4KPerImage, 1e-12)
+	require.InDelta(t, 0.20, model.Actual.OutputImage1KPerImage, 1e-12)
+	require.InDelta(t, 0.30, model.Actual.OutputImage2KPerImage, 1e-12)
+	require.InDelta(t, 0.60, model.Actual.OutputImage4KPerImage, 1e-12)
 }
 
 func TestModelPlazaBuildUserPlaza_UsesSchedulableAccountModelWhitelist(t *testing.T) {

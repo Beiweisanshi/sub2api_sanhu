@@ -9,6 +9,9 @@ export interface PlazaModelPrice {
   output_priority_per_mtok?: number
   cache_read_priority_per_mtok?: number
   output_image_per_image?: number
+  output_image_1k_per_image?: number
+  output_image_2k_per_image?: number
+  output_image_4k_per_image?: number
 }
 
 export interface PlazaModel {

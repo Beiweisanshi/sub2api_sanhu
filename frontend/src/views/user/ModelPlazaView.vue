@@ -91,7 +91,17 @@
                     <PriceCell :original="model.original.input_priority_per_mtok || 0" :actual="model.actual.input_priority_per_mtok || 0" :multiplier="group.effective_multiplier" />
                   </td>
                   <td v-if="hasImage(group)" class="px-5 py-3 text-right tabular-nums">
-                    <PriceCell :original="model.original.output_image_per_image || 0" :actual="model.actual.output_image_per_image || 0" :multiplier="group.effective_multiplier" />
+                    <div v-if="isImageModel(model)" class="flex flex-col items-end gap-1">
+                      <div
+                        v-for="tier in imageTiers(model)"
+                        :key="tier.label"
+                        class="flex items-center justify-end gap-2"
+                      >
+                        <span class="text-[11px] font-medium text-gray-400">{{ tier.label }}</span>
+                        <PriceCell :original="tier.original" :actual="tier.actual" :multiplier="group.effective_multiplier" />
+                      </div>
+                    </div>
+                    <span v-else class="text-gray-300">—</span>
                   </td>
                 </tr>
               </tbody>
@@ -173,8 +183,26 @@ const hasImage = (group: PlazaGroup): boolean => {
 }
 
 const isImageModel = (model: PlazaModel): boolean => {
-  return model.mode.includes('image') || (model.original.output_image_per_image || 0) > 0
+  return model.mode.toLowerCase().includes('image') || (model.original.output_image_per_image || 0) > 0
 }
+
+const imageTiers = (model: PlazaModel) => [
+  {
+    label: '1K',
+    original: model.original.output_image_1k_per_image ?? model.original.output_image_per_image ?? 0,
+    actual: model.actual.output_image_1k_per_image ?? model.actual.output_image_per_image ?? 0
+  },
+  {
+    label: '2K',
+    original: model.original.output_image_2k_per_image ?? 0,
+    actual: model.actual.output_image_2k_per_image ?? 0
+  },
+  {
+    label: '4K',
+    original: model.original.output_image_4k_per_image ?? 0,
+    actual: model.actual.output_image_4k_per_image ?? 0
+  }
+]
 
 const PriceCell = defineComponent({
   props: {
