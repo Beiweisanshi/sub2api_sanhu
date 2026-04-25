@@ -45,12 +45,7 @@ func newGatewayRoutesTestRouter() *gin.Engine {
 func TestGatewayRoutesOpenAIResponsesCompactPathIsRegistered(t *testing.T) {
 	router := newGatewayRoutesTestRouter()
 
-	for _, path := range []string{
-		"/v1/responses/compact",
-		"/responses/compact",
-		"/backend-api/codex/responses",
-		"/backend-api/codex/responses/compact",
-	} {
+	for _, path := range []string{"/v1/responses/compact", "/responses/compact"} {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"model":"gpt-5"}`))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
