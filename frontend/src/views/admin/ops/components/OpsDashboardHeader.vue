@@ -220,18 +220,18 @@ function openErrorDetails(kind: 'request' | 'upstream') {
 // --- Threshold checking helpers ---
 type ThresholdLevel = 'normal' | 'warning' | 'critical'
 
-function getSLAThresholdLevel(slaPercent: number | null): ThresholdLevel {
- if (slaPercent == null) return 'normal'
+function getFinalSuccessRateThresholdLevel(successRatePercent: number | null): ThresholdLevel {
+ if (successRatePercent == null) return 'normal'
  const threshold = props.thresholds?.sla_percent_min
  if (threshold == null) return 'normal'
 
- // SLA is "higher is better":
+ // Final success rate is "higher is better":
  // - below threshold => critical
  // - within +0.1% buffer => warning
  const warningBuffer = 0.1
 
- if (slaPercent < threshold) return 'critical'
- if (slaPercent < threshold + warningBuffer) return 'warning'
+ if (successRatePercent < threshold) return 'critical'
+ if (successRatePercent < threshold + warningBuffer) return 'warning'
  return 'normal'
 }
 
@@ -390,7 +390,7 @@ const tpsAvgLabel = computed(() => {
  return v.toFixed(1)
 })
 
-const slaPercent = computed(() => {
+const finalSuccessRatePercent = computed(() => {
  const v = overview.value?.sla
  if (typeof v !== 'number') return null
  return v * 100
@@ -590,19 +590,19 @@ const diagnosisReport = computed<DiagnosisItem[]>(() => {
  })
  }
 
- // SLA diagnostics
- const slaPct = (ov.sla ?? 0) * 100
- if (slaPct < 90) {
+ // Final success rate diagnostics
+ const finalSuccessPct = (ov.sla ?? 0) * 100
+ if (finalSuccessPct < 90) {
  report.push({
  type: 'critical',
- message: t('admin.ops.diagnosis.slaCritical', { sla: slaPct.toFixed(2) }),
+ message: t('admin.ops.diagnosis.slaCritical', { sla: finalSuccessPct.toFixed(2) }),
  impact: t('admin.ops.diagnosis.slaCriticalImpact'),
  action: t('admin.ops.diagnosis.slaCriticalAction')
  })
- } else if (slaPct < 98) {
+ } else if (finalSuccessPct < 98) {
  report.push({
  type: 'warning',
- message: t('admin.ops.diagnosis.slaLow', { sla: slaPct.toFixed(2) }),
+ message: t('admin.ops.diagnosis.slaLow', { sla: finalSuccessPct.toFixed(2) }),
  impact: t('admin.ops.diagnosis.slaLowImpact'),
  action: t('admin.ops.diagnosis.slaLowAction')
  })
@@ -1247,13 +1247,13 @@ function handleToolbarRefresh() {
  </div>
  </div>
 
- <!-- Card 2: SLA -->
+ <!-- Card 2: Final Success Rate -->
  <div class="rounded-2xl bg-gray-50 p-4" style="order: 2;">
  <div class="flex items-center justify-between">
  <div class="flex items-center gap-2">
  <span class="text-[10px] font-bold uppercase text-gray-400">{{ t('admin.ops.sla') }}</span>
  <HelpTooltip v-if="!props.fullscreen" :content="t('admin.ops.tooltips.sla')" />
- <span class="h-1.5 w-1.5 rounded-full" :class="getSLAThresholdLevel(slaPercent) === 'critical' ? 'bg-red-500' : getSLAThresholdLevel(slaPercent) === 'warning' ? 'bg-yellow-500' : 'bg-primary-500'"></span>
+ <span class="h-1.5 w-1.5 rounded-full" :class="getFinalSuccessRateThresholdLevel(finalSuccessRatePercent) === 'critical' ? 'bg-red-500' : getFinalSuccessRateThresholdLevel(finalSuccessRatePercent) === 'warning' ? 'bg-yellow-500' : 'bg-primary-500'"></span>
  </div>
  <button
  v-if="!props.fullscreen"
@@ -1264,11 +1264,11 @@ function handleToolbarRefresh() {
  {{ t('admin.ops.requestDetails.details') }}
  </button>
  </div>
- <div class="mt-2 text-3xl font-black" :class="getThresholdColorClass(getSLAThresholdLevel(slaPercent))">
- {{ slaPercent == null ? '-' : `${slaPercent.toFixed(3)}%` }}
+ <div class="mt-2 text-3xl font-black" :class="getThresholdColorClass(getFinalSuccessRateThresholdLevel(finalSuccessRatePercent))">
+ {{ finalSuccessRatePercent == null ? '-' : `${finalSuccessRatePercent.toFixed(3)}%` }}
  </div>
  <div class="mt-3 h-2 w-full overflow-hidden rounded-full bg-gray-200">
- <div class="h-full transition-all" :class="getSLAThresholdLevel(slaPercent) === 'critical' ? 'bg-red-500' : getSLAThresholdLevel(slaPercent) === 'warning' ? 'bg-yellow-500' : 'bg-primary-500'" :style="{ width: `${Math.max((slaPercent ?? 0) - 90, 0) * 10}%` }"></div>
+ <div class="h-full transition-all" :class="getFinalSuccessRateThresholdLevel(finalSuccessRatePercent) === 'critical' ? 'bg-red-500' : getFinalSuccessRateThresholdLevel(finalSuccessRatePercent) === 'warning' ? 'bg-yellow-500' : 'bg-primary-500'" :style="{ width: `${Math.max((finalSuccessRatePercent ?? 0) - 90, 0) * 10}%` }"></div>
  </div>
  <div class="mt-3 text-xs">
  <div class="flex justify-between">
