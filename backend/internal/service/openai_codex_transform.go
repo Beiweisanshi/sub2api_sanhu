@@ -385,12 +385,8 @@ func stringifyCodexContentText(value any) string {
 }
 
 func normalizeCodexModel(model string) string {
-	model = strings.TrimSpace(model)
 	if model == "" {
 		return "gpt-5.4"
-	}
-	if isOpenAIImageGenerationModel(model) {
-		return model
 	}
 
 	modelID := model
@@ -440,27 +436,6 @@ func isCodexSparkModel(model string) bool {
 	return normalizeCodexModel(model) == "gpt-5.3-codex-spark"
 }
 
-func hasOpenAIImageGenerationTool(reqBody map[string]any) bool {
-	rawTools, ok := reqBody["tools"]
-	if !ok || rawTools == nil {
-		return false
-	}
-	tools, ok := rawTools.([]any)
-	if !ok {
-		return false
-	}
-	for _, rawTool := range tools {
-		toolMap, ok := rawTool.(map[string]any)
-		if !ok {
-			continue
-		}
-		if strings.TrimSpace(firstNonEmptyString(toolMap["type"])) == "image_generation" {
-			return true
-		}
-	}
-	return false
-}
-
 func hasOpenAIInputImage(reqBody map[string]any) bool {
 	if reqBody == nil {
 		return false
@@ -495,46 +470,6 @@ func validateCodexSparkInput(reqBody map[string]any, model string) error {
 	return fmt.Errorf("model %q does not support image input", strings.TrimSpace(model))
 }
 
-func normalizeOpenAIResponsesImageGenerationTools(reqBody map[string]any) bool {
-	rawTools, ok := reqBody["tools"]
-	if !ok || rawTools == nil {
-		return false
-	}
-	tools, ok := rawTools.([]any)
-	if !ok {
-		return false
-	}
-
-	modified := false
-	for _, rawTool := range tools {
-		toolMap, ok := rawTool.(map[string]any)
-		if !ok || strings.TrimSpace(firstNonEmptyString(toolMap["type"])) != "image_generation" {
-			continue
-		}
-		if _, ok := toolMap["output_format"]; !ok {
-			if value := strings.TrimSpace(firstNonEmptyString(toolMap["format"])); value != "" {
-				toolMap["output_format"] = value
-				modified = true
-			}
-		}
-		if _, ok := toolMap["output_compression"]; !ok {
-			if value, exists := toolMap["compression"]; exists && value != nil {
-				toolMap["output_compression"] = value
-				modified = true
-			}
-		}
-		if _, ok := toolMap["format"]; ok {
-			delete(toolMap, "format")
-			modified = true
-		}
-		if _, ok := toolMap["compression"]; ok {
-			delete(toolMap, "compression")
-			modified = true
-		}
-	}
-	return modified
-}
-
 func applyCodexSparkImageUnsupportedInstructions(reqBody map[string]any) bool {
 	if len(reqBody) == 0 {
 		return false
@@ -550,17 +485,6 @@ func applyCodexSparkImageUnsupportedInstructions(reqBody map[string]any) bool {
 	}
 	reqBody["instructions"] = existing + "\n\n" + codexSparkImageUnsupportedText
 	return true
-}
-
-func validateOpenAIResponsesImageModel(reqBody map[string]any, model string) error {
-	if !hasOpenAIImageGenerationTool(reqBody) {
-		return nil
-	}
-	model = strings.TrimSpace(model)
-	if !isOpenAIImageGenerationModel(model) {
-		return nil
-	}
-	return fmt.Errorf("/v1/responses image_generation requests require a Responses-capable text model; image-only model %q is not allowed", model)
 }
 
 func normalizeOpenAIModelForUpstream(account *Account, model string) string {
