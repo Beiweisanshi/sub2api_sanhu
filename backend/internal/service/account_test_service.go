@@ -1431,17 +1431,9 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Conversation API returned %d", resp.StatusCode))
 	}
 
-	// 作者: mkx  变更: 2026/04/23 - 临时调试：把整个 SSE 流读进 buffer，解析完没图时 dump 出来看看
-	// 上游到底回了什么（非流错误、rate limit 提示、text-only 响应等）
-	streamBytes, readErr := io.ReadAll(resp.Body)
-	if readErr != nil {
-		return s.sendErrorAndEnd(c, fmt.Sprintf("Stream read failed: %s", readErr.Error()))
-	}
-	dumpResp := *resp
-	dumpResp.Body = io.NopCloser(bytes.NewReader(streamBytes))
-
+	// 和正式图片链路使用同一套流式解析/终止态识别，避免测试页和真实入口行为不一致。
 	startTime := time.Now()
-	conversationID, pointerInfos, _, _, err := readOpenAIImageConversationStream(&dumpResp, startTime)
+	conversationID, pointerInfos, _, _, err := readOpenAIImageConversationStream(ctx, resp, startTime)
 	if err != nil {
 		return s.sendErrorAndEnd(c, fmt.Sprintf("Stream read failed: %s", err.Error()))
 	}
@@ -1457,14 +1449,9 @@ func (s *AccountTestService) testOpenAIImageOAuth(c *gin.Context, ctx context.Co
 	}
 	pointerInfos = preferOpenAIFileServicePointerInfos(pointerInfos)
 	if len(pointerInfos) == 0 {
-		// 作者: mkx  变更: 2026/04/23 - 临时调试：打印原始 SSE 流的前 4KB 和长度
-		preview := streamBytes
-		if len(preview) > 4096 {
-			preview = preview[:4096]
-		}
 		log.Printf(
-			"conversation stream without images: account=%d status=%d conv_id=%q total_bytes=%d stream_prefix=%q",
-			account.ID, resp.StatusCode, conversationID, len(streamBytes), string(preview),
+			"conversation stream without images: account=%d status=%d conv_id=%q",
+			account.ID, resp.StatusCode, conversationID,
 		)
 		return s.sendErrorAndEnd(c, "No images returned from conversation")
 	}

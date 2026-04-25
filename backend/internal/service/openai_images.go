@@ -64,6 +64,25 @@ const (
 	openAIImageAcceptLanguage    = "zh-CN,zh;q=0.9,en;q=0.8"
 	openAIImageTimezone          = "America/Los_Angeles"
 	openAIImageTimezoneOffsetMin = -480
+
+	openAIImageBackendRetryAttempts = 3
+	openAIImageBackendRetryBase     = 300 * time.Millisecond
+	openAIImageBackendRetryMax      = 2 * time.Second
+	openAIImageShortRetryAfterMax   = 3 * time.Second
+
+	openAIImageConversationPollTimeout = 120 * time.Second
+	openAIImageConversationPollDelay   = 3 * time.Second
+	openAIImageDownloadURLAttempts     = 8
+	openAIImageDownloadURLRetryBase    = 750 * time.Millisecond
+	openAIImageDownloadURLRetryMax     = 3 * time.Second
+	openAIImageDownloadBytesAttempts   = 3
+	openAIImageDownloadBytesRetryBase  = 500 * time.Millisecond
+	openAIImageDownloadBytesRetryMax   = 2 * time.Second
+
+	openAIImageConversationAttempts  = 2
+	openAIImageConversationTimeout   = 90 * time.Second
+	openAIImageConversationRetryBase = 1500 * time.Millisecond
+	openAIImageConversationRetryMax  = 6 * time.Second
 )
 
 type OpenAIImagesCapability string
@@ -503,6 +522,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesAPIKey(
 			return nil, &UpstreamFailoverError{
 				StatusCode:             resp.StatusCode,
 				ResponseBody:           respBody,
+				ResponseHeaders:        resp.Header.Clone(),
 				RetryableOnSameAccount: account.IsPoolMode() && isPoolModeRetryableStatus(resp.StatusCode),
 			}
 		}
@@ -817,36 +837,130 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 	}
 	// 作者: mkx  变更: 2026/04/23 - bootstrap 只在冷启动/缓存过期且无法回退时才返回 error；
 	// 此时若继续请求会带着空/过期 oai-client-version 打 chat-requirements，上游稳定返回 500，必须中止
-	if bootstrapErr := bootstrapOpenAIBackendAPI(ctx, client, headers); bootstrapErr != nil {
+	if bootstrapErr := retryOpenAIImageBackendStep(ctx, account.ID, "bootstrap", func() error {
+		return bootstrapOpenAIBackendAPI(ctx, client, headers)
+	}); bootstrapErr != nil {
 		logger.LegacyPrintf("service.openai_gateway", "OpenAI image bootstrap failed: %v", bootstrapErr)
-		return nil, s.wrapOpenAIImageBackendError(ctx, c, account, bootstrapErr)
+		return nil, s.wrapOpenAIImagePreGenerationError(ctx, c, account, bootstrapErr, "bootstrap", openAIChatGPTStartURL)
 	}
 
-	chatReqs, err := fetchOpenAIChatRequirements(ctx, client, headers)
+	var uploads []openAIUploadedImage
+	if err := retryOpenAIImageBackendStep(ctx, account.ID, "upload", func() error {
+		var uploadErr error
+		uploads, uploadErr = uploadOpenAIImageFiles(ctx, client, headers, parsed.Uploads)
+		return uploadErr
+	}); err != nil {
+		return nil, s.wrapOpenAIImagePreGenerationError(ctx, c, account, err, "upload", openAIChatGPTFilesURL)
+	}
+
+	attemptResult, err := s.runOpenAIImageConversationWithRetries(ctx, c, account, client, headers, parsed, uploads, startTime)
 	if err != nil {
-		return nil, s.wrapOpenAIImageBackendError(ctx, c, account, err)
+		return nil, s.wrapOpenAIImageGenerationError(ctx, c, account, err)
+	}
+
+	c.Data(http.StatusOK, "application/json; charset=utf-8", attemptResult.ResponseBody)
+	return &OpenAIForwardResult{
+		RequestID:     attemptResult.RequestID,
+		Usage:         attemptResult.Usage,
+		Model:         requestModel,
+		UpstreamModel: requestModel,
+		Stream:        false,
+		Duration:      time.Since(startTime),
+		FirstTokenMs:  attemptResult.FirstTokenMs,
+		ImageCount:    attemptResult.ImageCount,
+		ImageSize:     parsed.SizeTier,
+	}, nil
+}
+
+type openAIImageConversationResult struct {
+	RequestID    string
+	Usage        OpenAIUsage
+	FirstTokenMs *int
+	ResponseBody []byte
+	ImageCount   int
+}
+
+func (s *OpenAIGatewayService) runOpenAIImageConversationWithRetries(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	client *req.Client,
+	headers http.Header,
+	parsed *OpenAIImagesRequest,
+	uploads []openAIUploadedImage,
+	startTime time.Time,
+) (*openAIImageConversationResult, error) {
+	var lastErr error
+	for attempt := 1; attempt <= openAIImageConversationAttempts; attempt++ {
+		attemptCtx, cancelAttempt := context.WithTimeout(ctx, openAIImageConversationTimeout)
+		result, err := s.runOpenAIImageConversationAttempt(attemptCtx, c, account, client, headers, parsed, uploads, startTime)
+		attemptCtxErr := attemptCtx.Err()
+		cancelAttempt()
+		if err == nil {
+			return result, nil
+		}
+		if isOpenAIImageContextError(err) {
+			if parentErr := ctx.Err(); parentErr != nil {
+				return nil, parentErr
+			}
+			if errors.Is(attemptCtxErr, context.DeadlineExceeded) {
+				err = newOpenAIImageStageError(
+					"conversation_timeout",
+					openAIChatGPTConversationURL,
+					fmt.Errorf("openai image conversation attempt timed out after %s", openAIImageConversationTimeout),
+				)
+			}
+		}
+		lastErr = err
+		if attempt >= openAIImageConversationAttempts || !shouldRetryOpenAIImageConversationSameAccount(err) {
+			break
+		}
+
+		delay := openAIImageCappedBackoff(attempt, openAIImageConversationRetryBase, openAIImageConversationRetryMax)
+		logger.LegacyPrintf("service.openai_images", "account %d: image conversation failed, retry %d/%d after %v: %s",
+			account.ID, attempt, openAIImageConversationAttempts, delay, sanitizeUpstreamErrorMessage(err.Error()))
+		if sleepErr := sleepWithContext(ctx, delay); sleepErr != nil {
+			return nil, sleepErr
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("openai image conversation failed")
+	}
+	return nil, lastErr
+}
+
+func (s *OpenAIGatewayService) runOpenAIImageConversationAttempt(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	client *req.Client,
+	headers http.Header,
+	parsed *OpenAIImagesRequest,
+	uploads []openAIUploadedImage,
+	startTime time.Time,
+) (*openAIImageConversationResult, error) {
+	var chatReqs *openAIChatRequirements
+	if err := retryOpenAIImageBackendStep(ctx, account.ID, "chat_requirements", func() error {
+		var fetchErr error
+		chatReqs, fetchErr = fetchOpenAIChatRequirements(ctx, client, headers)
+		return fetchErr
+	}); err != nil {
+		return nil, newOpenAIImageStageError("chat_requirements", openAIChatGPTChatRequirementsURL, err)
+	}
+	if chatReqs == nil {
+		err := fmt.Errorf("chat-requirements returned empty result")
+		return nil, newOpenAIImageStageError("chat_requirements", openAIChatGPTChatRequirementsURL, err)
 	}
 	if chatReqs.Arkose.Required {
-		return nil, s.wrapOpenAIImageBackendError(
-			ctx,
-			c,
-			account,
-			newOpenAIImageSyntheticStatusError(
-				http.StatusForbidden,
-				"chat-requirements requires unsupported challenge (arkose)",
-				openAIChatGPTChatRequirementsURL,
-			),
+		return nil, newOpenAIImageSyntheticStatusError(
+			http.StatusForbidden,
+			"chat-requirements requires unsupported challenge (arkose)",
+			openAIChatGPTChatRequirementsURL,
 		)
 	}
 
 	parentMessageID := uuid.NewString()
 	proofToken := generateOpenAIProofToken(chatReqs.ProofOfWork.Required, chatReqs.ProofOfWork.Seed, chatReqs.ProofOfWork.Difficulty, headers.Get("User-Agent"))
-
-	uploads, err := uploadOpenAIImageFiles(ctx, client, headers, parsed.Uploads)
-	if err != nil {
-		return nil, s.wrapOpenAIImageBackendError(ctx, c, account, err)
-	}
-
 	convReq := buildOpenAIImageConversationRequest(parsed, parentMessageID, uploads)
 	if parsedContent, err := json.Marshal(convReq); err == nil {
 		setOpsUpstreamRequestBody(c, parsedContent)
@@ -866,20 +980,23 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		SetBodyJsonMarshal(convReq).
 		Post(openAIChatGPTConversationURL)
 	if err != nil {
-		return nil, fmt.Errorf("openai image conversation request failed: %w", err)
+		return nil, newOpenAIImageStageError("conversation_request", openAIChatGPTConversationURL, fmt.Errorf("openai image conversation request failed: %w", err))
 	}
 	defer func() {
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}
 	}()
+	if resp == nil || resp.Body == nil {
+		return nil, newOpenAIImageStageError("conversation_request", openAIChatGPTConversationURL, fmt.Errorf("openai image conversation request returned empty response"))
+	}
 	if resp.StatusCode >= 400 {
-		return nil, s.wrapOpenAIImageBackendError(ctx, c, account, handleOpenAIImageBackendError(resp))
+		return nil, handleOpenAIImageBackendError(resp)
 	}
 
-	conversationID, pointerInfos, usage, firstTokenMs, err := readOpenAIImageConversationStream(resp, startTime)
+	conversationID, pointerInfos, usage, firstTokenMs, err := readOpenAIImageConversationStream(ctx, resp, startTime)
 	if err != nil {
-		return nil, err
+		return nil, newOpenAIImageStageError("conversation_stream", openAIChatGPTConversationURL, err)
 	}
 	// 作者: mkx  变更: 2026/04/23 - edit 场景下需要过滤掉输入图片的 file_id，避免把原图当成输出
 	inputFileIDs := make(map[string]struct{}, len(uploads))
@@ -891,31 +1008,26 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		// 作者: mkx  变更: 2026/04/23 - 轮询内部感知输入图，避免预览窗口提前返回"只有输入图"而被外层误判为失败
 		polledPointers, pollErr := pollOpenAIImageConversation(ctx, client, headers, conversationID, inputFileIDs)
 		if pollErr != nil {
-			return nil, s.wrapOpenAIImageBackendError(ctx, c, account, pollErr)
+			return nil, newOpenAIImageStageError("conversation_poll", openAIChatGPTConversationURL, pollErr)
 		}
 		pointerInfos = mergeOpenAIImagePointerInfos(pointerInfos, filterOpenAIInputPointerInfos(polledPointers, inputFileIDs))
 	}
 	pointerInfos = preferOpenAIFileServicePointerInfos(pointerInfos)
 	if len(pointerInfos) == 0 {
-		return nil, fmt.Errorf("openai image conversation returned no downloadable images")
+		return nil, &openAIImageNoDownloadableError{PollTimeout: openAIImageConversationPollTimeout}
 	}
 
 	responseBody, imageCount, err := buildOpenAIImageResponse(ctx, client, headers, conversationID, pointerInfos)
 	if err != nil {
-		return nil, s.wrapOpenAIImageBackendError(ctx, c, account, err)
+		return nil, newOpenAIImageStageError("download_result", openAIChatGPTFilesURL, err)
 	}
 
-	c.Data(http.StatusOK, "application/json; charset=utf-8", responseBody)
-	return &OpenAIForwardResult{
-		RequestID:     resp.Header.Get("x-request-id"),
-		Usage:         usage,
-		Model:         requestModel,
-		UpstreamModel: requestModel,
-		Stream:        false,
-		Duration:      time.Since(startTime),
-		FirstTokenMs:  firstTokenMs,
-		ImageCount:    imageCount,
-		ImageSize:     parsed.SizeTier,
+	return &openAIImageConversationResult{
+		RequestID:    resp.Header.Get("x-request-id"),
+		Usage:        usage,
+		FirstTokenMs: firstTokenMs,
+		ResponseBody: responseBody,
+		ImageCount:   imageCount,
 	}, nil
 }
 
@@ -1457,10 +1569,24 @@ type openAIImageToolMessage struct {
 	PointerInfos []openAIImagePointerInfo
 }
 
-func readOpenAIImageConversationStream(resp *req.Response, startTime time.Time) (string, []openAIImagePointerInfo, OpenAIUsage, *int, error) {
+func readOpenAIImageConversationStream(ctx context.Context, resp *req.Response, startTime time.Time) (string, []openAIImagePointerInfo, OpenAIUsage, *int, error) {
 	if resp == nil || resp.Body == nil {
 		return "", nil, OpenAIUsage{}, nil, fmt.Errorf("empty conversation response")
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = resp.Body.Close()
+		case <-done:
+		}
+	}()
+	defer close(done)
+
 	reader := bufio.NewReader(resp.Body)
 	var (
 		conversationID string
@@ -1471,6 +1597,11 @@ func readOpenAIImageConversationStream(resp *req.Response, startTime time.Time) 
 
 	for {
 		line, err := reader.ReadString('\n')
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return "", nil, OpenAIUsage{}, firstTokenMs, ctxErr
+			}
+		}
 		if strings.TrimSpace(line) != "" && firstTokenMs == nil {
 			ms := int(time.Since(startTime).Milliseconds())
 			firstTokenMs = &ms
@@ -1485,6 +1616,11 @@ func readOpenAIImageConversationStream(resp *req.Response, startTime time.Time) 
 			}
 			mergeOpenAIUsage(&usage, dataBytes)
 			pointers = mergeOpenAIImagePointerInfos(pointers, collectOpenAIImagePointers(dataBytes))
+			if len(pointers) == 0 {
+				if failureErr := detectOpenAIImageTerminalFailure(dataBytes); failureErr != nil {
+					return conversationID, pointers, usage, firstTokenMs, failureErr
+				}
+			}
 		}
 		if err == io.EOF {
 			break
@@ -1709,8 +1845,8 @@ func pollOpenAIImageConversation(ctx context.Context, client *req.Client, header
 	if conversationID == "" {
 		return nil, nil
 	}
-	deadline := time.Now().Add(90 * time.Second)
-	interval := 3 * time.Second
+	deadline := time.Now().Add(openAIImageConversationPollTimeout)
+	interval := openAIImageConversationPollDelay
 	previewWait := 15 * time.Second
 	var (
 		lastErr     error
@@ -1753,6 +1889,9 @@ func pollOpenAIImageConversation(ctx context.Context, client *req.Client, header
 				}
 				if len(outputs) > 0 && !firstToolAt.IsZero() && time.Since(firstToolAt) >= previewWait {
 					return outputs, nil
+				}
+				if failureErr := detectOpenAIImageTerminalFailure(body); failureErr != nil {
+					return nil, failureErr
 				}
 			} else {
 				statusErr := newOpenAIImageStatusError(resp, "conversation poll failed")
@@ -1837,7 +1976,8 @@ func fetchOpenAIImageDownloadURL(
 	}
 
 	var lastErr error
-	for attempt := 0; attempt < 8; attempt++ {
+	for attempt := 1; attempt <= openAIImageDownloadURLAttempts; attempt++ {
+		retryDelay := time.Duration(0)
 		var result struct {
 			DownloadURL string `json:"download_url"`
 		}
@@ -1848,26 +1988,29 @@ func fetchOpenAIImageDownloadURL(
 			Get(url)
 		if err != nil {
 			lastErr = err
+		} else if resp == nil {
+			lastErr = fmt.Errorf("fetch image download url failed: empty response")
 		} else if resp.IsSuccessState() && strings.TrimSpace(result.DownloadURL) != "" {
 			return strings.TrimSpace(result.DownloadURL), nil
 		} else {
 			statusErr := newOpenAIImageStatusError(resp, "fetch image download url failed")
-			if !allowConversationRetry || !isOpenAIImageTransientConversationNotFoundError(statusErr) {
+			if allowConversationRetry && isOpenAIImageTransientConversationNotFoundError(statusErr) {
+				lastErr = statusErr
+			} else if delay, ok := openAIImageBackendRetryDelay(statusErr, attempt); ok {
+				lastErr = statusErr
+				retryDelay = delay
+			} else {
 				return "", statusErr
 			}
-			lastErr = statusErr
 		}
-		if attempt == 7 {
+		if attempt >= openAIImageDownloadURLAttempts {
 			break
 		}
-		timer := time.NewTimer(750 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			return "", ctx.Err()
-		case <-timer.C:
+		if retryDelay <= 0 {
+			retryDelay = openAIImageCappedBackoff(attempt, openAIImageDownloadURLRetryBase, openAIImageDownloadURLRetryMax)
+		}
+		if err := sleepWithContext(ctx, retryDelay); err != nil {
+			return "", err
 		}
 	}
 	if lastErr == nil {
@@ -1877,36 +2020,62 @@ func fetchOpenAIImageDownloadURL(
 }
 
 func downloadOpenAIImageBytes(ctx context.Context, client *req.Client, headers http.Header, downloadURL string) ([]byte, error) {
-	request := client.R().
-		SetContext(ctx).
-		DisableAutoReadResponse()
+	var lastErr error
+	for attempt := 1; attempt <= openAIImageDownloadBytesAttempts; attempt++ {
+		retryDelay := time.Duration(0)
+		request := client.R().
+			SetContext(ctx).
+			DisableAutoReadResponse()
 
-	if strings.HasPrefix(downloadURL, openAIChatGPTStartURL) {
-		downloadHeaders := cloneHTTPHeader(headers)
-		downloadHeaders.Set("Accept", "image/*,*/*;q=0.8")
-		downloadHeaders.Del("Content-Type")
-		request.SetHeaders(headerToMap(downloadHeaders))
-	} else {
-		userAgent := strings.TrimSpace(headers.Get("User-Agent"))
-		if userAgent == "" {
-			userAgent = openAIImageBackendUserAgent
+		if strings.HasPrefix(downloadURL, openAIChatGPTStartURL) {
+			downloadHeaders := cloneHTTPHeader(headers)
+			downloadHeaders.Set("Accept", "image/*,*/*;q=0.8")
+			downloadHeaders.Del("Content-Type")
+			request.SetHeaders(headerToMap(downloadHeaders))
+		} else {
+			userAgent := strings.TrimSpace(headers.Get("User-Agent"))
+			if userAgent == "" {
+				userAgent = openAIImageBackendUserAgent
+			}
+			request.SetHeader("User-Agent", userAgent)
 		}
-		request.SetHeader("User-Agent", userAgent)
-	}
 
-	resp, err := request.Get(downloadURL)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if resp != nil && resp.Body != nil {
-			_ = resp.Body.Close()
+		resp, err := request.Get(downloadURL)
+		if err != nil {
+			lastErr = err
+		} else {
+			if resp == nil {
+				lastErr = fmt.Errorf("download image bytes failed: empty response")
+			} else if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+				body, readErr := io.ReadAll(resp.Body)
+				_ = resp.Body.Close()
+				if readErr == nil {
+					return body, nil
+				}
+				lastErr = readErr
+			} else {
+				lastErr = newOpenAIImageStatusError(resp, "download image bytes failed")
+				delay, ok := openAIImageBackendRetryDelay(lastErr, attempt)
+				if !ok {
+					return nil, lastErr
+				}
+				retryDelay = delay
+			}
 		}
-	}()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, newOpenAIImageStatusError(resp, "download image bytes failed")
+		if attempt >= openAIImageDownloadBytesAttempts {
+			break
+		}
+		if retryDelay <= 0 {
+			retryDelay = openAIImageCappedBackoff(attempt, openAIImageDownloadBytesRetryBase, openAIImageDownloadBytesRetryMax)
+		}
+		if err := sleepWithContext(ctx, retryDelay); err != nil {
+			return nil, err
+		}
 	}
-	return io.ReadAll(resp.Body)
+	if lastErr == nil {
+		lastErr = fmt.Errorf("download image bytes failed")
+	}
+	return nil, lastErr
 }
 
 func handleOpenAIImageBackendError(resp *req.Response) error {
@@ -1920,6 +2089,76 @@ type openAIImageStatusError struct {
 	ResponseHeaders http.Header
 	RequestID       string
 	URL             string
+}
+
+type openAIImageStageError struct {
+	Stage string
+	URL   string
+	Err   error
+}
+
+func newOpenAIImageStageError(stage string, url string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &openAIImageStageError{
+		Stage: strings.TrimSpace(stage),
+		URL:   strings.TrimSpace(url),
+		Err:   err,
+	}
+}
+
+func (e *openAIImageStageError) Error() string {
+	if e == nil || e.Err == nil {
+		return "openai image backend stage failed"
+	}
+	if e.Stage == "" {
+		return e.Err.Error()
+	}
+	return fmt.Sprintf("%s failed: %s", e.Stage, e.Err.Error())
+}
+
+func (e *openAIImageStageError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+type openAIImageNoDownloadableError struct {
+	PollTimeout time.Duration
+}
+
+func (e *openAIImageNoDownloadableError) Error() string {
+	timeout := e.PollTimeout
+	if timeout <= 0 {
+		timeout = openAIImageConversationPollTimeout
+	}
+	return fmt.Sprintf("openai image conversation returned no downloadable images after %s polling", timeout)
+}
+
+type openAIImageTerminalFailureError struct {
+	Message string
+	Status  string
+	Source  string
+}
+
+func (e *openAIImageTerminalFailureError) Error() string {
+	if e == nil {
+		return "openai image conversation failed"
+	}
+	message := strings.TrimSpace(e.Message)
+	if message == "" {
+		message = strings.TrimSpace(e.Status)
+	}
+	if message == "" {
+		message = "terminal failure status"
+	}
+	source := strings.TrimSpace(e.Source)
+	if source == "" {
+		return "openai image conversation failed: " + message
+	}
+	return fmt.Sprintf("openai image conversation %s failed: %s", source, message)
 }
 
 func (e *openAIImageStatusError) Error() string {
@@ -1998,8 +2237,8 @@ func newOpenAIImageSyntheticStatusError(statusCode int, message string, requestU
 }
 
 func isOpenAIImageTransientConversationNotFoundError(err error) bool {
-	statusErr, ok := err.(*openAIImageStatusError)
-	if !ok || statusErr == nil || statusErr.StatusCode != http.StatusNotFound {
+	var statusErr *openAIImageStatusError
+	if !errors.As(err, &statusErr) || statusErr == nil || statusErr.StatusCode != http.StatusNotFound {
 		return false
 	}
 	msg := strings.ToLower(strings.TrimSpace(statusErr.Message))
@@ -2014,6 +2253,426 @@ func isOpenAIImageTransientConversationNotFoundError(err error) bool {
 		return true
 	}
 	return strings.Contains(bodyMsg, "conversation") && strings.Contains(bodyMsg, "not found")
+}
+
+func openAIImageErrorStageURL(err error) (string, string) {
+	var stageErr *openAIImageStageError
+	if !errors.As(err, &stageErr) || stageErr == nil {
+		return "", ""
+	}
+	return strings.TrimSpace(stageErr.Stage), strings.TrimSpace(stageErr.URL)
+}
+
+func detectOpenAIImageTerminalFailure(body []byte) error {
+	if len(body) == 0 || !gjson.ValidBytes(body) {
+		return nil
+	}
+	if msg := openAIImageJSONErrorMessage(body); msg != "" {
+		return &openAIImageTerminalFailureError{
+			Message: msg,
+			Source:  "error",
+		}
+	}
+
+	if err := detectOpenAIImageMessageFailure(gjson.GetBytes(body, "message"), "message", true); err != nil {
+		return err
+	}
+
+	var found error
+	mapping := gjson.GetBytes(body, "mapping")
+	if mapping.IsObject() {
+		mapping.ForEach(func(_, node gjson.Result) bool {
+			if err := detectOpenAIImageMessageFailure(node.Get("message"), "mapping", false); err != nil {
+				found = err
+				return false
+			}
+			return true
+		})
+	}
+	return found
+}
+
+func openAIImageJSONErrorMessage(body []byte) string {
+	errorValue := gjson.GetBytes(body, "error")
+	if !errorValue.Exists() || errorValue.Raw == "" || errorValue.Raw == "null" {
+		return ""
+	}
+	for _, path := range []string{
+		"error.message",
+		"error.detail",
+		"error.code",
+		"error",
+	} {
+		if msg := strings.TrimSpace(gjson.GetBytes(body, path).String()); msg != "" && msg != "{}" && msg != "null" {
+			return sanitizeUpstreamErrorMessage(msg)
+		}
+	}
+	return "upstream returned an error event"
+}
+
+func detectOpenAIImageMessageFailure(message gjson.Result, source string, allowAssistant bool) error {
+	if !message.Exists() || message.Raw == "" || message.Raw == "null" {
+		return nil
+	}
+	role := strings.ToLower(strings.TrimSpace(message.Get("author.role").String()))
+	asyncTaskType := strings.ToLower(strings.TrimSpace(message.Get("metadata.async_task_type").String()))
+	imageRelated := asyncTaskType == "image_gen" ||
+		strings.Contains(message.Raw, "image_gen") ||
+		strings.Contains(message.Raw, "file-service://") ||
+		strings.Contains(message.Raw, "sediment://")
+	if !imageRelated && !(allowAssistant && (role == "assistant" || role == "tool")) {
+		return nil
+	}
+
+	for _, path := range []string{
+		"status",
+		"metadata.status",
+		"metadata.image_gen_status",
+		"metadata.async_status",
+		"metadata.finish_details.type",
+	} {
+		status := strings.TrimSpace(message.Get(path).String())
+		if isOpenAIImageFailureStatus(status) {
+			return &openAIImageTerminalFailureError{
+				Message: openAIImageMessageFailureText(message, status),
+				Status:  status,
+				Source:  source,
+			}
+		}
+	}
+	return nil
+}
+
+func isOpenAIImageFailureStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "failed", "failure", "error", "errored", "cancelled", "canceled", "expired", "timeout", "timed_out", "content_filter", "blocked":
+		return true
+	default:
+		return false
+	}
+}
+
+func openAIImageMessageFailureText(message gjson.Result, fallback string) string {
+	for _, path := range []string{
+		"metadata.error.message",
+		"metadata.error",
+		"metadata.status_details.error.message",
+		"metadata.status_details.error",
+		"metadata.finish_details.type",
+		"content.parts.0",
+		"status",
+	} {
+		msg := strings.TrimSpace(message.Get(path).String())
+		if msg != "" && msg != "{}" && msg != "null" {
+			return sanitizeUpstreamErrorMessage(msg)
+		}
+	}
+	return sanitizeUpstreamErrorMessage(strings.TrimSpace(fallback))
+}
+
+func isOpenAIImageGenerationRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isOpenAIImageContextError(err) {
+		return false
+	}
+
+	var noDownloadErr *openAIImageNoDownloadableError
+	if errors.As(err, &noDownloadErr) {
+		return true
+	}
+	var terminalFailureErr *openAIImageTerminalFailureError
+	if errors.As(err, &terminalFailureErr) {
+		return true
+	}
+
+	var statusErr *openAIImageStatusError
+	if errors.As(err, &statusErr) && statusErr != nil {
+		if isOpenAIImageTransientConversationNotFoundError(statusErr) {
+			return true
+		}
+		_, ok := openAIImageBackendRetryDelay(statusErr, 1)
+		return ok
+	}
+
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(msg, "unsupported image pointer") || strings.Contains(msg, "unsupported challenge") {
+		return false
+	}
+	if strings.Contains(msg, "no downloadable images") {
+		return true
+	}
+
+	stage, _ := openAIImageErrorStageURL(err)
+	switch stage {
+	case "chat_requirements", "conversation_request", "conversation_stream", "conversation_poll", "conversation_timeout", "download_result":
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldRetryOpenAIImageConversationSameAccount(err error) bool {
+	if !isOpenAIImageGenerationRetryable(err) {
+		return false
+	}
+	var noDownloadErr *openAIImageNoDownloadableError
+	if errors.As(err, &noDownloadErr) {
+		return false
+	}
+	var terminalFailureErr *openAIImageTerminalFailureError
+	if errors.As(err, &terminalFailureErr) {
+		return false
+	}
+	stage, _ := openAIImageErrorStageURL(err)
+	switch stage {
+	case "chat_requirements", "conversation_request":
+		return true
+	case "":
+		var statusErr *openAIImageStatusError
+		return errors.As(err, &statusErr)
+	default:
+		return false
+	}
+}
+
+func isOpenAIImageContextError(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+func retryOpenAIImageBackendStep(ctx context.Context, accountID int64, stage string, fn func() error) error {
+	var lastErr error
+	for attempt := 1; attempt <= openAIImageBackendRetryAttempts; attempt++ {
+		err := fn()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if attempt >= openAIImageBackendRetryAttempts {
+			break
+		}
+		delay, ok := openAIImageBackendRetryDelay(err, attempt)
+		if !ok {
+			return err
+		}
+		logger.LegacyPrintf("service.openai_images", "account %d: image backend %s failed, retry %d/%d after %v: %s",
+			accountID, stage, attempt, openAIImageBackendRetryAttempts, delay, sanitizeUpstreamErrorMessage(err.Error()))
+		if sleepErr := sleepWithContext(ctx, delay); sleepErr != nil {
+			return sleepErr
+		}
+	}
+	return lastErr
+}
+
+func openAIImageBackendRetryDelay(err error, attempt int) (time.Duration, bool) {
+	if err == nil {
+		return 0, false
+	}
+	var statusErr *openAIImageStatusError
+	if errors.As(err, &statusErr) && statusErr != nil {
+		msg := strings.ToLower(strings.TrimSpace(statusErr.Message))
+		if strings.Contains(msg, "unsupported challenge") {
+			return 0, false
+		}
+		switch statusErr.StatusCode {
+		case http.StatusTooManyRequests:
+			if delay, ok := parseOpenAIImageRetryAfter(statusErr.ResponseHeaders); ok {
+				if delay > openAIImageShortRetryAfterMax {
+					return 0, false
+				}
+				return delay, true
+			}
+			return openAIImageRetryBackoff(attempt), true
+		case http.StatusRequestTimeout, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 529:
+			return openAIImageRetryBackoff(attempt), true
+		default:
+			return 0, false
+		}
+	}
+	return openAIImageRetryBackoff(attempt), true
+}
+
+func openAIImageRetryBackoff(attempt int) time.Duration {
+	return openAIImageCappedBackoff(attempt, openAIImageBackendRetryBase, openAIImageBackendRetryMax)
+}
+
+func openAIImageCappedBackoff(attempt int, base time.Duration, max time.Duration) time.Duration {
+	if attempt <= 0 {
+		attempt = 1
+	}
+	delay := base * time.Duration(1<<uint(attempt-1))
+	if max > 0 && delay > max {
+		delay = max
+	}
+	// 加少量抖动，避免一批同账号请求同时醒来继续撞上游。
+	jitter := 0.8 + rand.Float64()*0.4
+	return time.Duration(float64(delay) * jitter)
+}
+
+func parseOpenAIImageRetryAfter(headers http.Header) (time.Duration, bool) {
+	if headers == nil {
+		return 0, false
+	}
+	raw := strings.TrimSpace(headers.Get("Retry-After"))
+	if raw == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.ParseFloat(raw, 64); err == nil {
+		if seconds <= 0 {
+			return 0, false
+		}
+		return time.Duration(seconds * float64(time.Second)), true
+	}
+	if t, err := http.ParseTime(raw); err == nil {
+		delay := time.Until(t)
+		if delay <= 0 {
+			return 0, false
+		}
+		return delay, true
+	}
+	return 0, false
+}
+
+func (s *OpenAIGatewayService) wrapOpenAIImagePreGenerationError(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	err error,
+	stage string,
+	upstreamURL string,
+) error {
+	if err == nil {
+		return nil
+	}
+	if isOpenAIImageContextError(err) {
+		return err
+	}
+	var statusErr *openAIImageStatusError
+	if errors.As(err, &statusErr) {
+		return s.wrapOpenAIImageBackendError(ctx, c, account, err)
+	}
+
+	s.recordOpenAIImageBackendRequestError(c, account, upstreamURL, stage, err)
+	message := sanitizeUpstreamErrorMessage(strings.TrimSpace(err.Error()))
+	if message == "" {
+		message = "openai image backend request failed"
+	}
+	body, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"type":    "upstream_error",
+			"message": message,
+			"stage":   strings.TrimSpace(stage),
+		},
+	})
+	return &UpstreamFailoverError{
+		StatusCode:   http.StatusBadGateway,
+		ResponseBody: body,
+	}
+}
+
+func (s *OpenAIGatewayService) wrapOpenAIImageGenerationError(
+	ctx context.Context,
+	c *gin.Context,
+	account *Account,
+	err error,
+) error {
+	if err == nil {
+		return nil
+	}
+	if isOpenAIImageContextError(err) {
+		return err
+	}
+	var statusErr *openAIImageStatusError
+	if errors.As(err, &statusErr) {
+		return s.wrapOpenAIImageBackendError(ctx, c, account, err)
+	}
+
+	stage, upstreamURL := openAIImageErrorStageURL(err)
+	if stage == "" {
+		stage = "conversation"
+	}
+	if upstreamURL == "" {
+		upstreamURL = openAIChatGPTConversationURL
+	}
+	s.recordOpenAIImageBackendRequestError(c, account, upstreamURL, stage, err)
+
+	if !isOpenAIImageGenerationRetryable(err) {
+		return err
+	}
+
+	message := sanitizeUpstreamErrorMessage(strings.TrimSpace(err.Error()))
+	if message == "" {
+		message = "openai image conversation failed"
+	}
+	body, _ := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"type":    "upstream_error",
+			"message": message,
+			"stage":   stage,
+		},
+	})
+	return &UpstreamFailoverError{
+		StatusCode:   http.StatusBadGateway,
+		ResponseBody: body,
+	}
+}
+
+func (s *OpenAIGatewayService) recordOpenAIImagePostGenerationError(c *gin.Context, account *Account, err error) error {
+	s.recordOpenAIImageBackendRequestError(c, account, openAIChatGPTFilesURL, "download_result", err)
+	return err
+}
+
+func (s *OpenAIGatewayService) recordOpenAIImageBackendRequestError(c *gin.Context, account *Account, upstreamURL string, stage string, err error) {
+	if c == nil || err == nil {
+		return
+	}
+	if stageErrStage, stageErrURL := openAIImageErrorStageURL(err); stageErrStage != "" || stageErrURL != "" {
+		if strings.TrimSpace(stage) == "" {
+			stage = stageErrStage
+		}
+		if strings.TrimSpace(upstreamURL) == "" {
+			upstreamURL = stageErrURL
+		}
+	}
+	message := sanitizeUpstreamErrorMessage(strings.TrimSpace(err.Error()))
+	if message == "" {
+		message = "openai image backend request failed"
+	}
+	statusCode := 0
+	requestID := ""
+	detail := ""
+	var statusErr *openAIImageStatusError
+	if errors.As(err, &statusErr) && statusErr != nil {
+		statusCode = statusErr.StatusCode
+		requestID = statusErr.RequestID
+		if len(statusErr.ResponseBody) > 0 {
+			detail = truncateString(string(statusErr.ResponseBody), 2048)
+		}
+		if statusErr.URL != "" {
+			upstreamURL = statusErr.URL
+		}
+	}
+	accountID := int64(0)
+	accountName := ""
+	platform := PlatformOpenAI
+	if account != nil {
+		accountID = account.ID
+		accountName = account.Name
+		platform = account.Platform
+	}
+	setOpsUpstreamError(c, statusCode, message, detail)
+	appendOpsUpstreamError(c, OpsUpstreamErrorEvent{
+		Platform:           platform,
+		AccountID:          accountID,
+		AccountName:        accountName,
+		UpstreamStatusCode: statusCode,
+		UpstreamRequestID:  requestID,
+		UpstreamURL:        safeUpstreamURL(upstreamURL),
+		Kind:               strings.TrimSpace(stage),
+		Message:            message,
+		Detail:             detail,
+	})
 }
 
 func (s *OpenAIGatewayService) wrapOpenAIImageBackendError(
@@ -2061,6 +2720,7 @@ func (s *OpenAIGatewayService) wrapOpenAIImageBackendError(
 		return &UpstreamFailoverError{
 			StatusCode:             statusErr.StatusCode,
 			ResponseBody:           statusErr.ResponseBody,
+			ResponseHeaders:        statusErr.ResponseHeaders,
 			RetryableOnSameAccount: retryableOnSameAccount,
 		}
 	}

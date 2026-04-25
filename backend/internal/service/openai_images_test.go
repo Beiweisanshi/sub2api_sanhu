@@ -2,14 +2,20 @@ package service
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/imroc/req/v3"
 	"github.com/stretchr/testify/require"
 )
 
@@ -168,9 +174,170 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_ExplicitSizeRequiresNative
 	require.Equal(t, OpenAIImagesCapabilityNative, parsed.RequiredCapability)
 }
 
+func TestOpenAIImageBackendRetryDelay_RetryAfter(t *testing.T) {
+	shortErr := &openAIImageStatusError{
+		StatusCode: http.StatusTooManyRequests,
+		Message:    "rate limited",
+		ResponseHeaders: http.Header{
+			"Retry-After": []string{"1"},
+		},
+	}
+	delay, ok := openAIImageBackendRetryDelay(shortErr, 1)
+	require.True(t, ok)
+	require.Equal(t, time.Second, delay)
+
+	longErr := &openAIImageStatusError{
+		StatusCode: http.StatusTooManyRequests,
+		Message:    "rate limited",
+		ResponseHeaders: http.Header{
+			"Retry-After": []string{"30"},
+		},
+	}
+	_, ok = openAIImageBackendRetryDelay(longErr, 1)
+	require.False(t, ok)
+}
+
+func TestOpenAIImageGenerationRetryableClassification(t *testing.T) {
+	require.True(t, isOpenAIImageGenerationRetryable(&openAIImageNoDownloadableError{
+		PollTimeout: 120 * time.Second,
+	}))
+
+	require.True(t, isOpenAIImageGenerationRetryable(&openAIImageStatusError{
+		StatusCode: http.StatusBadGateway,
+		Message:    "temporary bad gateway",
+	}))
+
+	require.False(t, isOpenAIImageGenerationRetryable(newOpenAIImageStageError(
+		"conversation_poll",
+		openAIChatGPTConversationURL,
+		context.Canceled,
+	)))
+
+	require.False(t, isOpenAIImageGenerationRetryable(&openAIImageStatusError{
+		StatusCode: http.StatusBadRequest,
+		Message:    "invalid request",
+	}))
+
+	require.False(t, isOpenAIImageGenerationRetryable(newOpenAIImageStageError(
+		"download_result",
+		openAIChatGPTFilesURL,
+		fmt.Errorf("unsupported image pointer: bad://id"),
+	)))
+}
+
+func TestOpenAIImageConversationSameAccountRetryPolicy(t *testing.T) {
+	require.False(t, shouldRetryOpenAIImageConversationSameAccount(&openAIImageNoDownloadableError{
+		PollTimeout: 120 * time.Second,
+	}))
+	require.False(t, shouldRetryOpenAIImageConversationSameAccount(&openAIImageTerminalFailureError{
+		Message: "image generation failed",
+		Source:  "mapping",
+	}))
+	require.False(t, shouldRetryOpenAIImageConversationSameAccount(newOpenAIImageStageError(
+		"conversation_timeout",
+		openAIChatGPTConversationURL,
+		fmt.Errorf("openai image conversation attempt timed out after %s", openAIImageConversationTimeout),
+	)))
+	require.False(t, shouldRetryOpenAIImageConversationSameAccount(newOpenAIImageStageError(
+		"conversation_poll",
+		openAIChatGPTConversationURL,
+		fmt.Errorf("poll timed out"),
+	)))
+	require.False(t, shouldRetryOpenAIImageConversationSameAccount(newOpenAIImageStageError(
+		"conversation_stream",
+		openAIChatGPTConversationURL,
+		fmt.Errorf("stream error"),
+	)))
+	require.False(t, shouldRetryOpenAIImageConversationSameAccount(newOpenAIImageStageError(
+		"download_result",
+		openAIChatGPTFilesURL,
+		fmt.Errorf("download failed"),
+	)))
+
+	require.True(t, shouldRetryOpenAIImageConversationSameAccount(&openAIImageStatusError{
+		StatusCode: http.StatusBadGateway,
+		Message:    "temporary bad gateway",
+	}))
+	require.True(t, shouldRetryOpenAIImageConversationSameAccount(newOpenAIImageStageError(
+		"chat_requirements",
+		openAIChatGPTChatRequirementsURL,
+		fmt.Errorf("temporary request failed"),
+	)))
+}
+
+func TestDetectOpenAIImageTerminalFailure(t *testing.T) {
+	err := detectOpenAIImageTerminalFailure([]byte(`{"error":{"message":"image generation failed upstream"}}`))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "image generation failed upstream")
+
+	err = detectOpenAIImageTerminalFailure([]byte(`{
+		"mapping": {
+			"tool-1": {
+				"message": {
+					"author": {"role": "tool"},
+					"status": "failed",
+					"metadata": {"async_task_type": "image_gen"},
+					"content": {"content_type": "multimodal_text", "parts": []}
+				}
+			}
+		}
+	}`))
+	require.Error(t, err)
+	var terminalErr *openAIImageTerminalFailureError
+	require.ErrorAs(t, err, &terminalErr)
+	require.Equal(t, "failed", terminalErr.Status)
+
+	err = detectOpenAIImageTerminalFailure([]byte(`{
+		"mapping": {
+			"tool-1": {
+				"message": {
+					"author": {"role": "tool"},
+					"status": "finished_successfully",
+					"metadata": {"async_task_type": "image_gen"},
+					"content": {"content_type": "multimodal_text", "parts": [{"asset_pointer":"file-service://file_ok"}]}
+				}
+			}
+		}
+	}`))
+	require.NoError(t, err)
+}
+
+func TestReadOpenAIImageConversationStreamStopsOnContextDeadline(t *testing.T) {
+	body := &blockingOpenAIImageStreamBody{done: make(chan struct{})}
+	resp := &req.Response{
+		Response: &http.Response{Body: body},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, _, _, _, err := readOpenAIImageConversationStream(ctx, resp, time.Now())
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.Less(t, time.Since(start), time.Second)
+}
+
+type blockingOpenAIImageStreamBody struct {
+	once sync.Once
+	done chan struct{}
+}
+
+func (b *blockingOpenAIImageStreamBody) Read(_ []byte) (int, error) {
+	<-b.done
+	return 0, io.EOF
+}
+
+func (b *blockingOpenAIImageStreamBody) Close() error {
+	b.once.Do(func() {
+		close(b.done)
+	})
+	return nil
+}
+
 // 作者: mkx  变更: 2026/04/23 - 回归之前 PoW answer 的两个 bug：
 //  1. part2 没去除尾部 ']' 导致拼接后多一个闭合符
 //  2. 字段错位（core+3008 字符串、0.123456 小数、UTC RFC1123 等），生成的不是合法浏览器指纹
+//
 // 低难度下能解出，且解出的答案 base64 解码后必须是合法 JSON，字段数=18，索引 3/9 分别被 i/i>>1 填入。
 func TestGenerateOpenAIChallengeAnswer_StructuredPayload(t *testing.T) {
 	// 准备缓存，让 buildOpenAIPowConfig 拿到稳定的 dpl/script

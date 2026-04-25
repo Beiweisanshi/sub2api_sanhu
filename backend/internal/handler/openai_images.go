@@ -24,6 +24,9 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	defer h.recoverResponsesPanic(c, &streamStarted)
 
 	requestStart := time.Now()
+	requestCtx, cancelRequest := context.WithTimeout(c.Request.Context(), openAIImagesRequestTimeout)
+	defer cancelRequest()
+	c.Request = c.Request.WithContext(requestCtx)
 
 	apiKey, ok := middleware2.GetAPIKeyFromContext(c)
 	if !ok {
@@ -127,7 +130,7 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 	for {
 		reqLog.Debug("openai.images.account_selecting", zap.Int("excluded_account_count", len(failedAccountIDs)))
 		selection, scheduleDecision, err := h.gatewayService.SelectAccountWithSchedulerForImages(
-			c.Request.Context(),
+			requestCtx,
 			apiKey.GroupID,
 			sessionHash,
 			parsed.Model,
@@ -135,6 +138,10 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 			parsed.RequiredCapability,
 		)
 		if err != nil {
+			if h.handleOpenAIImageContextError(c, err, streamStarted) {
+				reqLog.Warn("openai.images.account_select_context_done", zap.Error(err))
+				return
+			}
 			reqLog.Warn("openai.images.account_select_failed",
 				zap.Error(err),
 				zap.Int("excluded_account_count", len(failedAccountIDs)),
@@ -196,18 +203,21 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
 				if failoverErr.RetryableOnSameAccount {
 					retryLimit := account.GetPoolModeRetryCount()
-					if sameAccountRetryCount[account.ID] < retryLimit {
+					retryDelay, retryNow := openAISameAccountRetryDelay(failoverErr)
+					if retryNow && sameAccountRetryCount[account.ID] < retryLimit {
 						sameAccountRetryCount[account.ID]++
 						reqLog.Warn("openai.images.pool_mode_same_account_retry",
 							zap.Int64("account_id", account.ID),
 							zap.Int("upstream_status", failoverErr.StatusCode),
 							zap.Int("retry_limit", retryLimit),
 							zap.Int("retry_count", sameAccountRetryCount[account.ID]),
+							zap.Duration("retry_delay", retryDelay),
 						)
 						select {
-						case <-c.Request.Context().Done():
+						case <-requestCtx.Done():
+							_ = h.handleOpenAIImageContextError(c, requestCtx.Err(), streamStarted)
 							return
-						case <-time.After(sameAccountRetryDelay):
+						case <-time.After(retryDelay):
 						}
 						continue
 					}
@@ -229,6 +239,13 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 				continue
 			}
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account.ID, false, nil)
+			if h.handleOpenAIImageContextError(c, err, streamStarted) {
+				reqLog.Warn("openai.images.request_context_canceled",
+					zap.Int64("account_id", account.ID),
+					zap.Error(err),
+				)
+				return
+			}
 			wroteFallback := h.ensureForwardErrorResponse(c, streamStarted)
 			fields := []zap.Field{
 				zap.Int64("account_id", account.ID),
@@ -295,4 +312,22 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 
 func isMultipartImagesContentType(contentType string) bool {
 	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(contentType)), "multipart/form-data")
+}
+
+const (
+	openAIStatusClientClosedRequest = 499
+	openAIImagesRequestTimeout      = 260 * time.Second
+)
+
+func (h *OpenAIGatewayHandler) handleOpenAIImageContextError(c *gin.Context, err error, streamStarted bool) bool {
+	switch {
+	case errors.Is(err, context.Canceled):
+		h.handleStreamingAwareError(c, openAIStatusClientClosedRequest, "request_canceled", "Request canceled by client", streamStarted)
+		return true
+	case errors.Is(err, context.DeadlineExceeded):
+		h.handleStreamingAwareError(c, http.StatusGatewayTimeout, "timeout_error", "Request timed out while waiting for image generation", streamStarted)
+		return true
+	default:
+		return false
+	}
 }

@@ -169,6 +169,53 @@ func TestOpenAIEnsureForwardErrorResponse_DoesNotOverrideWrittenResponse(t *test
 	assert.Equal(t, "already written", w.Body.String())
 }
 
+func TestOpenAIImageContextErrorResponse(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantType   string
+		wantMsg    string
+	}{
+		{
+			name:       "client canceled",
+			err:        context.Canceled,
+			wantStatus: 499,
+			wantType:   "request_canceled",
+			wantMsg:    "Request canceled by client",
+		},
+		{
+			name:       "deadline exceeded",
+			err:        context.DeadlineExceeded,
+			wantStatus: http.StatusGatewayTimeout,
+			wantType:   "timeout_error",
+			wantMsg:    "Request timed out while waiting for image generation",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+			h := &OpenAIGatewayHandler{}
+			handled := h.handleOpenAIImageContextError(c, tt.err, false)
+
+			require.True(t, handled)
+			require.Equal(t, tt.wantStatus, w.Code)
+
+			var parsed map[string]any
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &parsed))
+			errorObj, ok := parsed["error"].(map[string]any)
+			require.True(t, ok)
+			require.Equal(t, tt.wantType, errorObj["type"])
+			require.Equal(t, tt.wantMsg, errorObj["message"])
+		})
+	}
+}
+
 func TestShouldLogOpenAIForwardFailureAsWarn(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
