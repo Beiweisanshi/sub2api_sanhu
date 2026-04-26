@@ -361,7 +361,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 						continue
 					}
 				}
-				h.gatewayService.RecordOpenAIAccountSwitch()
+				h.prepareOpenAIAccountSwitch(c.Request.Context(), account, failoverErr)
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
 				if switchCount >= maxAccountSwitches {
@@ -754,7 +754,7 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 						continue
 					}
 				}
-				h.gatewayService.RecordOpenAIAccountSwitch()
+				h.prepareOpenAIAccountSwitch(c.Request.Context(), account, failoverErr)
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
 				if switchCount >= maxAccountSwitches {
@@ -1626,10 +1626,7 @@ func openAISameAccountRetryDelay(failoverErr *service.UpstreamFailoverError) (ti
 	if failoverErr.StatusCode != http.StatusTooManyRequests {
 		return sameAccountRetryDelay, true
 	}
-	if failoverErr.ResponseHeaders == nil {
-		return sameAccountRetryDelay, true
-	}
-	delay, ok := parseOpenAIRetryAfterHeader(failoverErr.ResponseHeaders.Get("Retry-After"))
+	delay, ok := service.ParseOpenAIRetryAfter(failoverErr.ResponseHeaders)
 	if !ok {
 		return sameAccountRetryDelay, true
 	}
@@ -1639,25 +1636,13 @@ func openAISameAccountRetryDelay(failoverErr *service.UpstreamFailoverError) (ti
 	return delay, true
 }
 
-func parseOpenAIRetryAfterHeader(raw string) (time.Duration, bool) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return 0, false
+func (h *OpenAIGatewayHandler) prepareOpenAIAccountSwitch(ctx context.Context, account *service.Account, failoverErr *service.UpstreamFailoverError) {
+	if h == nil || h.gatewayService == nil || account == nil {
+		return
 	}
-	if seconds, err := strconv.ParseFloat(raw, 64); err == nil {
-		if seconds <= 0 {
-			return 0, false
-		}
-		return time.Duration(seconds * float64(time.Second)), true
-	}
-	if t, err := http.ParseTime(raw); err == nil {
-		delay := time.Until(t)
-		if delay <= 0 {
-			return 0, false
-		}
-		return delay, true
-	}
-	return 0, false
+	h.gatewayService.RecordOpenAIAccountSwitch()
+	h.gatewayService.TempUnscheduleRetryableError(ctx, account.ID, failoverErr)
+	h.gatewayService.ApplyShortSwitchCooldown(ctx, account.ID)
 }
 
 func ensureOpenAIPoolModeSessionHash(sessionHash string, account *service.Account) string {

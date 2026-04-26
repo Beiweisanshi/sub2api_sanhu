@@ -222,12 +222,28 @@ func (h *OpenAIGatewayHandler) Images(c *gin.Context) {
 						continue
 					}
 				}
-				h.gatewayService.RecordOpenAIAccountSwitch()
+				h.prepareOpenAIAccountSwitch(requestCtx, account, failoverErr)
 				failedAccountIDs[account.ID] = struct{}{}
 				lastFailoverErr = failoverErr
 				if switchCount >= maxAccountSwitches {
 					h.handleFailoverExhausted(c, failoverErr, streamStarted)
 					return
+				}
+				// 作者: mkx  变更: 2026/04/26
+				// 剩余预算不够再跑一次完整 attempt 时立即收尾，避免 504 触顶。
+				if deadline, ok := requestCtx.Deadline(); ok {
+					remaining := time.Until(deadline)
+					if remaining < service.OpenAIImageMinAttemptBudget {
+						reqLog.Warn("openai.images.failover_budget_exhausted",
+							zap.Int64("account_id", account.ID),
+							zap.Int("upstream_status", failoverErr.StatusCode),
+							zap.Int("switch_count", switchCount),
+							zap.Duration("remaining", remaining),
+							zap.Duration("min_attempt_budget", service.OpenAIImageMinAttemptBudget),
+						)
+						h.handleFailoverExhausted(c, failoverErr, streamStarted)
+						return
+					}
 				}
 				switchCount++
 				reqLog.Warn("openai.images.upstream_failover_switching",
