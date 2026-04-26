@@ -1272,6 +1272,22 @@ func (s *OpenAIGatewayService) RecordOpenAIAccountSwitch() {
 	scheduler.ReportSwitch()
 }
 
+// TempUnscheduleRetryableError 对 OpenAI 专用 failover 路径补齐同账号重试耗尽后的临时封禁。
+func (s *OpenAIGatewayService) TempUnscheduleRetryableError(ctx context.Context, accountID int64, failoverErr *UpstreamFailoverError) {
+	if s == nil {
+		return
+	}
+	tempUnscheduleRetryableError(ctx, s.accountRepo, accountID, failoverErr, "[openai_handler]")
+}
+
+// ApplyShortSwitchCooldown 在 OpenAI 专用 failover 换号前短暂摘除旧账号。
+func (s *OpenAIGatewayService) ApplyShortSwitchCooldown(ctx context.Context, accountID int64) {
+	if s == nil {
+		return
+	}
+	applyShortSwitchCooldown(ctx, s.accountRepo, accountID)
+}
+
 func (s *OpenAIGatewayService) SnapshotOpenAIAccountSchedulerMetrics() OpenAIAccountSchedulerMetricsSnapshot {
 	scheduler := s.getOpenAIAccountScheduler(context.Background())
 	if scheduler == nil {

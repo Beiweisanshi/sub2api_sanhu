@@ -559,16 +559,7 @@ func (e *UpstreamFailoverError) Error() string {
 // TempUnscheduleRetryableError 对 RetryableOnSameAccount 类型的 failover 错误触发临时封禁。
 // 由 handler 层在同账号重试全部用尽、切换账号时调用。
 func (s *GatewayService) TempUnscheduleRetryableError(ctx context.Context, accountID int64, failoverErr *UpstreamFailoverError) {
-	if failoverErr == nil || !failoverErr.RetryableOnSameAccount {
-		return
-	}
-	// 根据状态码选择封禁策略
-	switch failoverErr.StatusCode {
-	case http.StatusBadRequest:
-		tempUnscheduleGoogleConfigError(ctx, s.accountRepo, accountID, "[handler]")
-	case http.StatusBadGateway:
-		tempUnscheduleEmptyResponse(ctx, s.accountRepo, accountID, "[handler]")
-	}
+	tempUnscheduleRetryableError(ctx, s.accountRepo, accountID, failoverErr, "[handler]")
 }
 
 // shortSwitchCooldownDuration 换号时加给旧账号的短期冷却时长。
@@ -579,10 +570,40 @@ const shortSwitchCooldownDuration = 30 * time.Second
 // 用于抵御 "handle429/DB 写入 ↔ 并发选号" 之间的瞬时竞态。
 // 若账号已有更长的 RateLimitResetAt 或 TempUnschedulableUntil，则保留现有冷却不覆盖。
 func (s *GatewayService) ApplyShortSwitchCooldown(ctx context.Context, accountID int64) {
-	if s == nil || s.accountRepo == nil || accountID <= 0 {
+	if s == nil {
 		return
 	}
-	account, err := s.accountRepo.GetByID(ctx, accountID)
+	applyShortSwitchCooldown(ctx, s.accountRepo, accountID)
+}
+
+func tempUnscheduleRetryableError(ctx context.Context, accountRepo AccountRepository, accountID int64, failoverErr *UpstreamFailoverError, logPrefix string) {
+	if accountRepo == nil || failoverErr == nil {
+		return
+	}
+	// 作者: mkx  变更: 2026/04/26
+	// 根据状态码选择封禁策略。
+	// 401/502/504 是明确的"账号级失败"信号（token 失效 / 上游已确认无法响应），
+	// 不再要求 RetryableOnSameAccount=true 才下架——即便走的是直接换号路径，
+	// 也已经为这次确认浪费了完整的 timeout 窗口，没必要让下一个新请求再选中它。
+	// 400 仍然要求 RetryableOnSameAccount=true：上游显式标记为 Google 配置错误时才视为账号问题，
+	// 普通 400 通常是客户端请求错误，不应封禁账号。
+	switch failoverErr.StatusCode {
+	case http.StatusBadRequest:
+		if failoverErr.RetryableOnSameAccount {
+			tempUnscheduleGoogleConfigError(ctx, accountRepo, accountID, logPrefix)
+		}
+	case http.StatusUnauthorized:
+		tempUnscheduleAuthError(ctx, accountRepo, accountID, logPrefix)
+	case http.StatusBadGateway, http.StatusGatewayTimeout:
+		tempUnscheduleEmptyResponse(ctx, accountRepo, accountID, logPrefix)
+	}
+}
+
+func applyShortSwitchCooldown(ctx context.Context, accountRepo AccountRepository, accountID int64) {
+	if accountRepo == nil || accountID <= 0 {
+		return
+	}
+	account, err := accountRepo.GetByID(ctx, accountID)
 	if err != nil || account == nil {
 		return
 	}
@@ -594,7 +615,7 @@ func (s *GatewayService) ApplyShortSwitchCooldown(ctx context.Context, accountID
 	if account.TempUnschedulableUntil != nil && account.TempUnschedulableUntil.After(target) {
 		return
 	}
-	if err := s.accountRepo.SetTempUnschedulable(ctx, accountID, target, "short_switch_cooldown"); err != nil {
+	if err := accountRepo.SetTempUnschedulable(ctx, accountID, target, "short_switch_cooldown"); err != nil {
 		slog.Warn("short_switch_cooldown_set_failed", "account_id", accountID, "error", err)
 	}
 }

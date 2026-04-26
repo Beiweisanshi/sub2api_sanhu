@@ -2534,6 +2534,23 @@ func tempUnscheduleEmptyResponse(ctx context.Context, repo AccountRepository, ac
 	}
 }
 
+// authErrorCooldown 作者: mkx  变更: 2026/04/26
+// 上游 401 的临时封禁时长。覆盖一次 token refresh 周期，又不至于在偶发抖动时
+// 把账号永久封死；token refresh 成功后调度器会通过 ClearTempUnschedulable 解除。
+const authErrorCooldown = 5 * time.Minute
+
+// tempUnscheduleAuthError 作者: mkx  变更: 2026/04/26
+// 对上游 401 触发临时封禁，避免 token 已失效的账号在 5 分钟内被反复选中。
+func tempUnscheduleAuthError(ctx context.Context, repo AccountRepository, accountID int64, logPrefix string) {
+	until := time.Now().Add(authErrorCooldown)
+	reason := "401: upstream authentication failed (auto temp-unschedule 5m)"
+	if err := repo.SetTempUnschedulable(ctx, accountID, until, reason); err != nil {
+		log.Printf("%s temp_unschedule_failed account=%d error=%v", logPrefix, accountID, err)
+	} else {
+		log.Printf("%s temp_unscheduled account=%d until=%v reason=%q", logPrefix, accountID, until.Format("15:04:05"), reason)
+	}
+}
+
 // sleepAntigravityBackoffWithContext 带 context 取消检查的退避等待
 // 返回 true 表示正常完成等待，false 表示 context 已取消
 func sleepAntigravityBackoffWithContext(ctx context.Context, attempt int) bool {

@@ -34,6 +34,26 @@ type snapshotUpdateAccountRepo struct {
 	updateExtraCalls chan map[string]any
 }
 
+type openAISwitchCooldownRepo struct {
+	stubOpenAIAccountRepo
+	tempUnschedCalls []openAISwitchCooldownCall
+}
+
+type openAISwitchCooldownCall struct {
+	accountID int64
+	until     time.Time
+	reason    string
+}
+
+func (r *openAISwitchCooldownRepo) SetTempUnschedulable(ctx context.Context, id int64, until time.Time, reason string) error {
+	r.tempUnschedCalls = append(r.tempUnschedCalls, openAISwitchCooldownCall{
+		accountID: id,
+		until:     until,
+		reason:    reason,
+	})
+	return nil
+}
+
 func (r *snapshotUpdateAccountRepo) UpdateExtra(ctx context.Context, id int64, updates map[string]any) error {
 	if r.updateExtraCalls != nil {
 		copied := make(map[string]any, len(updates))
@@ -224,6 +244,39 @@ func TestOpenAIGatewayService_GenerateSessionHash_AttachesLegacyHashToContext(t 
 	require.NotNil(t, c.Request)
 	require.NotNil(t, c.Request.Context())
 	require.NotEmpty(t, openAILegacySessionHashFromContext(c.Request.Context()))
+}
+
+func TestOpenAIGatewayService_ApplyShortSwitchCooldown(t *testing.T) {
+	repo := &openAISwitchCooldownRepo{
+		stubOpenAIAccountRepo: stubOpenAIAccountRepo{
+			accounts: []Account{{ID: 101}},
+		},
+	}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+
+	before := time.Now()
+	svc.ApplyShortSwitchCooldown(context.Background(), 101)
+
+	require.Len(t, repo.tempUnschedCalls, 1)
+	call := repo.tempUnschedCalls[0]
+	require.Equal(t, int64(101), call.accountID)
+	require.Equal(t, "short_switch_cooldown", call.reason)
+	require.True(t, call.until.After(before.Add(25*time.Second)))
+	require.True(t, call.until.Before(before.Add(35*time.Second)))
+}
+
+func TestOpenAIGatewayService_ApplyShortSwitchCooldownKeepsLongerCooldown(t *testing.T) {
+	future := time.Now().Add(2 * time.Minute)
+	repo := &openAISwitchCooldownRepo{
+		stubOpenAIAccountRepo: stubOpenAIAccountRepo{
+			accounts: []Account{{ID: 102, TempUnschedulableUntil: &future}},
+		},
+	}
+	svc := &OpenAIGatewayService{accountRepo: repo}
+
+	svc.ApplyShortSwitchCooldown(context.Background(), 102)
+
+	require.Empty(t, repo.tempUnschedCalls)
 }
 
 func TestOpenAIGatewayService_GenerateSessionHashWithFallback(t *testing.T) {
