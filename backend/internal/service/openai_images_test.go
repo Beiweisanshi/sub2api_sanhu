@@ -174,27 +174,20 @@ func TestOpenAIGatewayServiceParseOpenAIImagesRequest_ExplicitSizeRequiresNative
 	require.Equal(t, OpenAIImagesCapabilityNative, parsed.RequiredCapability)
 }
 
-func TestOpenAIImageBackendRetryDelay_RetryAfter(t *testing.T) {
-	shortErr := &openAIImageStatusError{
-		StatusCode: http.StatusTooManyRequests,
-		Message:    "rate limited",
-		ResponseHeaders: http.Header{
-			"Retry-After": []string{"1"},
-		},
+// 作者: mkx  变更: 2026/04/26
+// 429 不再在 Layer 1 重试，统一交给 handler 层 openAISameAccountRetryDelay 决策。
+func TestOpenAIImageBackendRetryDelay_429NotRetriedAtLayer1(t *testing.T) {
+	for _, retryAfter := range []string{"1", "30", ""} {
+		err := &openAIImageStatusError{
+			StatusCode: http.StatusTooManyRequests,
+			Message:    "rate limited",
+			ResponseHeaders: http.Header{
+				"Retry-After": []string{retryAfter},
+			},
+		}
+		_, ok := openAIImageBackendRetryDelay(err, 1)
+		require.False(t, ok, "429 with Retry-After=%q should not be retried at layer 1", retryAfter)
 	}
-	delay, ok := openAIImageBackendRetryDelay(shortErr, 1)
-	require.True(t, ok)
-	require.Equal(t, time.Second, delay)
-
-	longErr := &openAIImageStatusError{
-		StatusCode: http.StatusTooManyRequests,
-		Message:    "rate limited",
-		ResponseHeaders: http.Header{
-			"Retry-After": []string{"30"},
-		},
-	}
-	_, ok = openAIImageBackendRetryDelay(longErr, 1)
-	require.False(t, ok)
 }
 
 func TestOpenAIImageGenerationRetryableClassification(t *testing.T) {
@@ -222,46 +215,6 @@ func TestOpenAIImageGenerationRetryableClassification(t *testing.T) {
 		"download_result",
 		openAIChatGPTFilesURL,
 		fmt.Errorf("unsupported image pointer: bad://id"),
-	)))
-}
-
-func TestOpenAIImageConversationSameAccountRetryPolicy(t *testing.T) {
-	require.False(t, shouldRetryOpenAIImageConversationSameAccount(&openAIImageNoDownloadableError{
-		PollTimeout: 120 * time.Second,
-	}))
-	require.False(t, shouldRetryOpenAIImageConversationSameAccount(&openAIImageTerminalFailureError{
-		Message: "image generation failed",
-		Source:  "mapping",
-	}))
-	require.False(t, shouldRetryOpenAIImageConversationSameAccount(newOpenAIImageStageError(
-		"conversation_timeout",
-		openAIChatGPTConversationURL,
-		fmt.Errorf("openai image conversation attempt timed out after %s", openAIImageConversationTimeout),
-	)))
-	require.False(t, shouldRetryOpenAIImageConversationSameAccount(newOpenAIImageStageError(
-		"conversation_poll",
-		openAIChatGPTConversationURL,
-		fmt.Errorf("poll timed out"),
-	)))
-	require.False(t, shouldRetryOpenAIImageConversationSameAccount(newOpenAIImageStageError(
-		"conversation_stream",
-		openAIChatGPTConversationURL,
-		fmt.Errorf("stream error"),
-	)))
-	require.False(t, shouldRetryOpenAIImageConversationSameAccount(newOpenAIImageStageError(
-		"download_result",
-		openAIChatGPTFilesURL,
-		fmt.Errorf("download failed"),
-	)))
-
-	require.True(t, shouldRetryOpenAIImageConversationSameAccount(&openAIImageStatusError{
-		StatusCode: http.StatusBadGateway,
-		Message:    "temporary bad gateway",
-	}))
-	require.True(t, shouldRetryOpenAIImageConversationSameAccount(newOpenAIImageStageError(
-		"chat_requirements",
-		openAIChatGPTChatRequirementsURL,
-		fmt.Errorf("temporary request failed"),
 	)))
 }
 

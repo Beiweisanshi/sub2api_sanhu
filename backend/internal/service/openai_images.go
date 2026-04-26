@@ -79,11 +79,15 @@ const (
 	openAIImageDownloadBytesRetryBase  = 500 * time.Millisecond
 	openAIImageDownloadBytesRetryMax   = 2 * time.Second
 
-	openAIImageConversationAttempts  = 2
-	openAIImageConversationTimeout   = 90 * time.Second
-	openAIImageConversationRetryBase = 1500 * time.Millisecond
-	openAIImageConversationRetryMax  = 6 * time.Second
+	// 单次 conversation attempt 最大耗时（与 ChatGPT 后端实测响应窗口对齐）。
+	// 作者: mkx  变更: 2026/04/26 - 删除 layer 2 同账号重试，让 handler 切号统一决策
+	openAIImageConversationTimeout = 90 * time.Second
 )
+
+// OpenAIImageMinAttemptBudget 启动一次 conversation attempt 所需的最小剩余预算。
+// 剩余 < 此值时直接放弃，让 handler 立即收尾返回真实错误码而非 504 触顶。
+// 作者: mkx  变更: 2026/04/26
+const OpenAIImageMinAttemptBudget = 60 * time.Second
 
 type OpenAIImagesCapability string
 
@@ -853,7 +857,7 @@ func (s *OpenAIGatewayService) forwardOpenAIImagesOAuth(
 		return nil, s.wrapOpenAIImagePreGenerationError(ctx, c, account, err, "upload", openAIChatGPTFilesURL)
 	}
 
-	attemptResult, err := s.runOpenAIImageConversationWithRetries(ctx, c, account, client, headers, parsed, uploads, startTime)
+	attemptResult, err := s.runOpenAIImageConversation(ctx, c, account, client, headers, parsed, uploads, startTime)
 	if err != nil {
 		return nil, s.wrapOpenAIImageGenerationError(ctx, c, account, err)
 	}
@@ -880,7 +884,13 @@ type openAIImageConversationResult struct {
 	ImageCount   int
 }
 
-func (s *OpenAIGatewayService) runOpenAIImageConversationWithRetries(
+// 作者: mkx  变更: 2026/04/26
+// 单次 conversation attempt + 预算门限。
+// 历史上这里跑 layer 2 同账号重试 (attempts=2)，但生产数据证明:
+//   - 90s timeout 切断后 attempt 2 几乎 100% 仍 502，只是再浪费 90s
+//   - 多次 attempt 把 260s 总预算挤爆 → 大量 504 触顶
+// 现在改为单次 attempt + 入口预算检查，让 handler 切号决策同账号还是换账号。
+func (s *OpenAIGatewayService) runOpenAIImageConversation(
 	ctx context.Context,
 	c *gin.Context,
 	account *Account,
@@ -890,43 +900,33 @@ func (s *OpenAIGatewayService) runOpenAIImageConversationWithRetries(
 	uploads []openAIUploadedImage,
 	startTime time.Time,
 ) (*openAIImageConversationResult, error) {
-	var lastErr error
-	for attempt := 1; attempt <= openAIImageConversationAttempts; attempt++ {
-		attemptCtx, cancelAttempt := context.WithTimeout(ctx, openAIImageConversationTimeout)
-		result, err := s.runOpenAIImageConversationAttempt(attemptCtx, c, account, client, headers, parsed, uploads, startTime)
-		attemptCtxErr := attemptCtx.Err()
-		cancelAttempt()
-		if err == nil {
-			return result, nil
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining < OpenAIImageMinAttemptBudget {
+			return nil, fmt.Errorf("attempt budget %s below minimum %s: %w",
+				remaining.Round(time.Millisecond), OpenAIImageMinAttemptBudget, context.DeadlineExceeded)
 		}
-		if isOpenAIImageContextError(err) {
-			if parentErr := ctx.Err(); parentErr != nil {
-				return nil, parentErr
-			}
-			if errors.Is(attemptCtxErr, context.DeadlineExceeded) {
-				err = newOpenAIImageStageError(
-					"conversation_timeout",
-					openAIChatGPTConversationURL,
-					fmt.Errorf("openai image conversation attempt timed out after %s", openAIImageConversationTimeout),
-				)
-			}
-		}
-		lastErr = err
-		if attempt >= openAIImageConversationAttempts || !shouldRetryOpenAIImageConversationSameAccount(err) {
-			break
-		}
+	}
 
-		delay := openAIImageCappedBackoff(attempt, openAIImageConversationRetryBase, openAIImageConversationRetryMax)
-		logger.LegacyPrintf("service.openai_images", "account %d: image conversation failed, retry %d/%d after %v: %s",
-			account.ID, attempt, openAIImageConversationAttempts, delay, sanitizeUpstreamErrorMessage(err.Error()))
-		if sleepErr := sleepWithContext(ctx, delay); sleepErr != nil {
-			return nil, sleepErr
+	attemptCtx, cancelAttempt := context.WithTimeout(ctx, openAIImageConversationTimeout)
+	defer cancelAttempt()
+	result, err := s.runOpenAIImageConversationAttempt(attemptCtx, c, account, client, headers, parsed, uploads, startTime)
+	if err == nil {
+		return result, nil
+	}
+	if isOpenAIImageContextError(err) {
+		if parentErr := ctx.Err(); parentErr != nil {
+			return nil, parentErr
+		}
+		if errors.Is(attemptCtx.Err(), context.DeadlineExceeded) {
+			err = newOpenAIImageStageError(
+				"conversation_timeout",
+				openAIChatGPTConversationURL,
+				fmt.Errorf("openai image conversation attempt timed out after %s", openAIImageConversationTimeout),
+			)
 		}
 	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("openai image conversation failed")
-	}
-	return nil, lastErr
+	return nil, err
 }
 
 func (s *OpenAIGatewayService) runOpenAIImageConversationAttempt(
@@ -2413,30 +2413,6 @@ func isOpenAIImageGenerationRetryable(err error) bool {
 	}
 }
 
-func shouldRetryOpenAIImageConversationSameAccount(err error) bool {
-	if !isOpenAIImageGenerationRetryable(err) {
-		return false
-	}
-	var noDownloadErr *openAIImageNoDownloadableError
-	if errors.As(err, &noDownloadErr) {
-		return false
-	}
-	var terminalFailureErr *openAIImageTerminalFailureError
-	if errors.As(err, &terminalFailureErr) {
-		return false
-	}
-	stage, _ := openAIImageErrorStageURL(err)
-	switch stage {
-	case "chat_requirements", "conversation_request":
-		return true
-	case "":
-		var statusErr *openAIImageStatusError
-		return errors.As(err, &statusErr)
-	default:
-		return false
-	}
-}
-
 func isOpenAIImageContextError(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
@@ -2477,13 +2453,10 @@ func openAIImageBackendRetryDelay(err error, attempt int) (time.Duration, bool) 
 		}
 		switch statusErr.StatusCode {
 		case http.StatusTooManyRequests:
-			if delay, ok := parseOpenAIImageRetryAfter(statusErr.ResponseHeaders); ok {
-				if delay > openAIImageShortRetryAfterMax {
-					return 0, false
-				}
-				return delay, true
-			}
-			return openAIImageRetryBackoff(attempt), true
+			// 作者: mkx  变更: 2026/04/26
+			// 429 不在 Layer 1 重试。让 handler 层 openAISameAccountRetryDelay
+			// 根据 Retry-After 决定同账号短重试 (≤3s) 还是直接换号，避免三层级联浪费预算。
+			return 0, false
 		case http.StatusRequestTimeout, http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout, 529:
 			return openAIImageRetryBackoff(attempt), true
 		default:
@@ -2510,7 +2483,9 @@ func openAIImageCappedBackoff(attempt int, base time.Duration, max time.Duration
 	return time.Duration(float64(delay) * jitter)
 }
 
-func parseOpenAIImageRetryAfter(headers http.Header) (time.Duration, bool) {
+// ParseOpenAIRetryAfter 解析 HTTP Retry-After 头（数值秒或 HTTP-date）。
+// 作者: mkx  变更: 2026/04/26 - 从 handler/service 各自一份解析合并到此处
+func ParseOpenAIRetryAfter(headers http.Header) (time.Duration, bool) {
 	if headers == nil {
 		return 0, false
 	}
